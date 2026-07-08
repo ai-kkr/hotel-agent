@@ -1,0 +1,90 @@
+[project]
+name = "kkr-hotel-assist"
+version = "0.1.0"
+description = "Email-based hotel concierge agent: negotiates with hotels on a client's behalf after booking."
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "fastapi>=0.115",
+    "python-multipart>=0.0.9",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "greenlet>=3.0",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "temporalio>=1.7",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-postgres>=2.0",
+    "langchain>=0.3",
+    "langchain-openai>=0.2",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "structlog>=24.1",
+    "html2text>=2025.4.15",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "ty>=0.0.1a",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "respx>=0.21",
+    "aiosqlite>=0.20",
+    "ezgmail>=2026.4.28",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/domain", "src/infrastructure", "src/presentation"]
+
+# --- DoD tooling ---
+
+[tool.ruff]
+src = ["src", "tests", "scripts"]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "scripts"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers --cov=domain --cov=infrastructure --cov=presentation --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]
+
+# ty is the production-code type gate. Tests use loose typing (dict-unpacking into typed kwargs,
+# fakes["x"] → typed vars) suppressed with mypy-style `# type: ignore`, which ty does not honor.
+# Rather than clutter tests with `# ty: ignore` or weaken real types, ty checks production code
+# (src/) only; tests are still covered by ruff + pytest.
+[tool.ty.src]
+exclude = ["tests/", "scripts/"]
+
+[tool.ty.environment]
+python-version = "3.12"

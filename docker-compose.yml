@@ -1,0 +1,59 @@
+# Local development stack for kkr-hotel-assist.
+# Brings up the dependencies the app needs to run locally — no Mailgun (the app uses the stub mail
+# provider in local mode). Start with:  docker compose up
+# Tear down (incl. data volumes):  docker compose down -v
+#
+# Service ports mirror the defaults in infrastructure/config.Settings:
+#   - Temporal:  localhost:7233   (KKR_TEMPORAL_TARGET)
+#   - Temporal UI: localhost:8080
+#   - Postgres:  localhost:5432   (KKR_POSTGRES_DSN / KKR_LANGGRAPH_DSN)
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kkr
+    ports:
+      - "5432:5432"
+    volumes:
+      - kkr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kkr"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  temporal:
+    # auto-setup bootstraps Temporal's own schema on the postgres service, so no manual setup.
+    # (Note: Temporal is retiring this image; for a lighter alternative see `temporal server
+    # start-dev` in docs/ops.md — no Docker needed.)
+    image: temporalio/auto-setup:1.24.2
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      # POSTGRES_SEEDS is the host list auto-setup dials — here the compose "postgres" service.
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    ports:
+      - "7233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal-ui:
+    image: temporalio/ui:2.45.2
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - temporal
+
+volumes:
+  kkr_pgdata:
