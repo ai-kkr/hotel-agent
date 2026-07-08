@@ -17,3 +17,7 @@ class UnauthorizedSender(IntakeError):
 
 class ExtractionInsufficient(IntakeError):
     """Extraction could not confidently produce a usable booking."""
+
+
+class UnknownChannelSession(IntakeError):
+    """A chat-forward arrived from a channel address with no bound ChannelSession."""

@@ -127,7 +127,7 @@ async def test_llm_activity_retry_is_bounded() -> None:
                 id="bounded-retry",
                 task_queue="kkr-tasks",
             )
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: B017 - Temporal surfaces a wrapped failure of any kind
                 await handle.result()
         assert extractor.calls == 3, f"LLM activity should retry exactly 3 times, got {extractor.calls}"
 

@@ -143,6 +143,7 @@ class StubOutboundGateway:
             idempotency_key=idempotency_key,
             message_id=message_id,
             mail_domain=self._mail_domain,
+            body_preview=body[:200],
         )
         return message_id
 

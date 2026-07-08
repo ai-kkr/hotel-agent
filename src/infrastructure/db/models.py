@@ -114,3 +114,24 @@ class MessageORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
     __table_args__ = (Index("ix_messages_booking_created", "booking_id", "created_at"),)
+
+
+class ChannelSessionORM(Base):
+    """A client ↔ channel-address binding (e.g. Telegram ``chat_id``).
+
+    Additive over the email-only core (design D5 / client-communication spec). Rollback = drop table.
+    """
+
+    __tablename__ = "channel_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    client_token: Mapped[str] = mapped_column(ForeignKey("clients.token"), nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    address: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    client: Mapped[ClientORM] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("channel", "address", name="uq_channel_sessions_channel_address"),
+    )

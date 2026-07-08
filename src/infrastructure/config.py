@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     # --- Outbound report delivery channel (v1 = email) ---
     client_channel: Literal["email"] = "email"
 
+    # --- Telegram bot / bot-facing API (design D10) ---
+    # Shared secret authenticating the bot → API calls (POST /api/client-mailbox). Not user creds.
+    bot_api_secret: str = ""
+    # Telegram bot token (polling/webhook). Empty disables the adapter.
+    telegram_bot_token: str = ""
+    telegram_polling: bool = True  # True = long-poll; False = webhook (url configured out-of-band)
+    # Server-side long-poll seconds for getUpdates (HTTP read timeout is padded beyond this).
+    telegram_poll_timeout_seconds: int = Field(default=30, ge=1)
+
 
 def get_settings() -> Settings:
     """Return a fresh :class:`Settings` instance."""

@@ -71,4 +71,21 @@ class ClientMessage:
     provider_message_id: str | None = None
 
 
-DomainEvent = ConfirmForward | HotelReply | ClientMessage
+@dataclass(frozen=True)
+class ChatForward:
+    """A client forwarded a booking confirmation directly into a chat session (design D6).
+
+    Authenticated by the chat's :class:`ChannelSession` (no SPF/DKIM); the ``client_token`` is
+    resolved from the session, never trusted from the payload. Produces the same intake path as a
+    :class:`ConfirmForward`.
+    """
+
+    client_token: ClientToken
+    chat_id: str  # the channel address (e.g. Telegram chat id); must match a ChannelSession
+    cover_text: str  # client's accompanying note (may contain wishes)
+    forwarded_payload: str  # the forwarded confirmation body (text)
+    received_at: datetime
+    channel: Channel = Channel.TELEGRAM
+
+
+DomainEvent = ConfirmForward | HotelReply | ClientMessage | ChatForward

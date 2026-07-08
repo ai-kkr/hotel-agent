@@ -5,7 +5,8 @@ Used in tests and as fakes for the agent/workflow. No external dependencies.
 
 from __future__ import annotations
 
-from domain.entities import Booking, Client, Message
+from domain.entities import Booking, ChannelSession, Client, Message
+from domain.enums import Channel
 from domain.ids import BookingId, ClientToken, MessageId
 
 
@@ -47,3 +48,28 @@ class InMemoryBookingRepository:
 
     async def messages(self, booking_id: BookingId) -> list[Message]:
         return list(self._messages.get(booking_id, []))
+
+    async def bookings_for_client(self, token: ClientToken) -> list[Booking]:
+        return [b for b in self._bookings.values() if b.client_token == token]
+
+
+class InMemoryChannelSessionRepository:
+    def __init__(self) -> None:
+        self._by_address: dict[tuple[str, str], ChannelSession] = {}
+
+    async def client_for(self, channel: Channel, address: str) -> ClientToken | None:
+        session = self._by_address.get((channel.value, address))
+        return session.client_token if session else None
+
+    async def address_for(self, token: ClientToken, channel: Channel) -> str | None:
+        for (chan, _addr), session in self._by_address.items():
+            if chan == channel.value and session.client_token == token:
+                return session.address
+        return None
+
+    async def upsert(self, session: ChannelSession) -> None:
+        key = (session.channel.value, session.address)
+        existing = self._by_address.get(key)
+        if existing is not None and existing.client_token != session.client_token:
+            raise ValueError(f"channel address {session.address!r} already bound to another client")
+        self._by_address[key] = session

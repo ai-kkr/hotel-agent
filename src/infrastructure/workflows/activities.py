@@ -39,6 +39,7 @@ from domain.ports import (
     ContactDiscoverer,
     NegotiationAgent,
     OutboundMailGateway,
+    ProgressEvent,
     ReportBuilder,
 )
 from infrastructure.workflows.dtos import (
@@ -212,14 +213,49 @@ class ConciergeActivities:
 
     @activity.defn
     async def build_report(self, state: BookingState) -> str:
-        return await self._reporter.build(_state_to_booking(state))
+        booking = _state_to_booking(state)
+        report = await self._reporter.build(booking)
+        if booking.is_cancelled:
+            # Reflect the cancellation as the outcome (design D8); keep the report deliverable.
+            return (
+                f"This booking was cancelled at your request; no further messages were sent to "
+                f"{booking.hotel.hotel_name}.\n\n{report}"
+            )
+        return report
 
     @activity.defn
     async def relay_to_client(self, booking_id: str, subject: str, body: str) -> None:
+        """Deliver the report as a progress event (kind="report") via the generalized notifier."""
         booking = await self._bookings.get(BookingId(booking_id))
         if booking is None:
             return
-        await self._notifier.notify(booking, subject, body)
+        await self._notifier.notify(
+            ProgressEvent(
+                client_token=booking.client_token,
+                booking_id=booking_id,
+                kind="report",
+                subject=subject,
+                body=body,
+            )
+        )
+
+    @activity.defn
+    async def notify_progress(
+        self, booking_id: str, kind: str, subject: str, body: str
+    ) -> None:
+        """Push a user-visible progress event on a lifecycle/topic transition (design D7)."""
+        booking = await self._bookings.get(BookingId(booking_id))
+        if booking is None:
+            return
+        await self._notifier.notify(
+            ProgressEvent(
+                client_token=booking.client_token,
+                booking_id=booking_id,
+                kind=kind,
+                subject=subject,
+                body=body,
+            )
+        )
 
     @activity.defn
     async def update_booking_state(self, state: BookingState) -> None:

@@ -73,7 +73,53 @@ class SearchDone:
             raise ValueError("hotel_name must not be empty")
 
 
+# --- Surface-agent artifacts (design D4, D8) ----------------------------------------
+#
+# These are emitted by the surface agent (the live chat brain), not the per-booking negotiation
+# agent. They are surface-agnostic: the agent never references a specific channel; a channel
+# adapter renders them (e.g. RequestUserDecision → Telegram inline keyboard).
+
+
+@dataclass(frozen=True)
+class RequestUserDecision:
+    """Ask the client a multiple-choice question (design D4).
+
+    Rendered by the active channel adapter (e.g. inline keyboard on Telegram). A choice is
+    normalized back into a :class:`domain.events.ClientMessage` carrying the selected option.
+    """
+
+    question: str
+    options: list[str]
+
+    def __post_init__(self) -> None:
+        if not self.question.strip():
+            raise ValueError("question must not be empty")
+        if not self.options:
+            raise ValueError("options must not be empty")
+        if any(not opt.strip() for opt in self.options):
+            raise ValueError("options must not contain empty strings")
+
+
+@dataclass(frozen=True)
+class CancelBooking:
+    """The client wants to cancel an in-progress booking (design D8).
+
+    Emitted by ``delete_task``; executed by a service — the agent performs no side-effect. The
+    service cancels the Temporal workflow (``workflow_id == booking_id``) and moves the booking to
+    ``BookingLifecycle.CANCELLED`` idempotently.
+    """
+
+    booking_id: str
+
+    def __post_init__(self) -> None:
+        if not self.booking_id.strip():
+            raise ValueError("booking_id must not be empty")
+
+
 AgentIntent = SendEmail | NeedMoreInfo | Resolved | SearchDone
+
+
+SurfaceArtifact = RequestUserDecision | CancelBooking
 
 
 # --- Triggers: what kicks a negotiation turn ----------------------------------------

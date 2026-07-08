@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from domain.entities import Booking, Client, HotelContact, Message, Topic
+from domain.entities import Booking, ChannelSession, Client, HotelContact, Message, Topic
 from domain.enums import BookingLifecycle, Channel, MessageDirection, SenderRole, TopicStatus
 from domain.ids import EmailAddress
-from infrastructure.db.models import BookingORM, ClientORM, MessageORM, TopicORM
+from infrastructure.db.models import BookingORM, ChannelSessionORM, ClientORM, MessageORM, TopicORM
 
 
 def _email(value: str | None) -> EmailAddress | None:
@@ -21,6 +21,25 @@ def client_to_orm(client: Client) -> ClientORM:
 
 def client_from_orm(orm: ClientORM) -> Client:
     return Client(token=orm.token, email=EmailAddress(orm.email), name=orm.name)
+
+
+# --- ChannelSession ---
+
+
+def channel_session_to_orm(session: ChannelSession) -> ChannelSessionORM:
+    return ChannelSessionORM(
+        client_token=session.client_token,
+        channel=session.channel.value,
+        address=session.address,
+    )
+
+
+def channel_session_from_orm(orm: ChannelSessionORM) -> ChannelSession:
+    return ChannelSession(
+        client_token=orm.client_token,
+        channel=Channel(orm.channel),
+        address=orm.address,
+    )
 
 
 # --- Topic ---

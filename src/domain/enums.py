@@ -31,6 +31,7 @@ class BookingLifecycle(StrEnum):
     REPORT_SENT = "report_sent"
     AWAITING_CLIENT_FOLLOWUP = "awaiting_client_followup"
     CANT_PROGRESS = "cant_progress"
+    CANCELLED = "cancelled"  # client-initiated cancellation (D8)
 
 
 class MessageDirection(StrEnum):

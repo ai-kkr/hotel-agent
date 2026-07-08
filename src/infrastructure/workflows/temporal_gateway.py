@@ -7,6 +7,7 @@ Temporal client, never on workflow internals, so HTTP stays thin and testable wi
 from __future__ import annotations
 
 import uuid
+from contextlib import suppress
 
 from temporalio.client import Client
 
@@ -79,6 +80,17 @@ class TemporalWorkflowGateway:
     ) -> None:
         handle = self._client.get_workflow_handle(booking_id)
         await handle.signal(BookingWorkflow.delivery_failure, args=[severity, description])
+
+    async def cancel_booking(self, booking_id: BookingId) -> None:
+        """Cancel the booking's Temporal workflow (``workflow_id == booking_id``, design D8).
+
+        Best-effort: a workflow that already completed/terminated is treated as already cancelled
+        (the caller marks the booking ``CANCELLED`` idempotently regardless).
+        """
+        handle = self._client.get_workflow_handle(booking_id)
+        with suppress(Exception):
+            # Already terminated / not running — cancellation is idempotent at the domain level.
+            await handle.cancel()
 
 
 def _new_booking_id() -> str:

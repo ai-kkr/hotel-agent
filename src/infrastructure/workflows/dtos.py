@@ -21,6 +21,7 @@ LifecycleValue = Literal[
     "report_sent",
     "awaiting_client_followup",
     "cant_progress",
+    "cancelled",
 ]
 ActionValue = Literal["send_email", "resolved", "need_more_info"]
 

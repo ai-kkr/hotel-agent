@@ -7,9 +7,11 @@ channels swappable (D8) and the agent replacable/testable with fakes.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from domain.entities import Booking, Client, Message
+from domain.entities import Booking, ChannelSession, Client, Message
+from domain.enums import Channel
 from domain.events import ClientMessage, ConfirmForward, DomainEvent, HotelReply, InboundEmail
 from domain.extraction import ExtractedBooking
 from domain.ids import BookingId, ClientToken, EmailAddress, MessageId
@@ -22,6 +24,24 @@ from domain.intents import AgentIntent, SearchDone, Trigger
 class ClientRepository(Protocol):
     async def by_token(self, token: ClientToken) -> Client | None: ...
 
+    async def add(self, client: Client) -> None: ...
+
+
+@runtime_checkable
+class ChannelSessionRepository(Protocol):
+    """Resolve a client ↔ channel-address binding (design D5 / client-communication spec).
+
+    Inbound chat events resolve a client from a channel address; outbound delivery resolves a
+    channel address from a client. ``upsert`` binds a (channel, address) to a client token and is
+    idempotent.
+    """
+
+    async def client_for(self, channel: Channel, address: str) -> ClientToken | None: ...
+
+    async def address_for(self, token: ClientToken, channel: Channel) -> str | None: ...
+
+    async def upsert(self, session: ChannelSession) -> None: ...
+
 
 @runtime_checkable
 class BookingRepository(Protocol):
@@ -32,6 +52,8 @@ class BookingRepository(Protocol):
     async def add_message(self, message: Message) -> MessageId | None: ...
 
     async def messages(self, booking_id: BookingId) -> list[Message]: ...
+
+    async def bookings_for_client(self, token: ClientToken) -> list[Booking]: ...
 
 
 # --- Channel gateways (per-provider, per-channel adapters) ---------------------------
@@ -63,9 +85,38 @@ class InboundMailNormalizer(Protocol):
 
 @runtime_checkable
 class ClientNotifier(Protocol):
-    """Deliver a report / notification to the client over the configured channel (email on v1)."""
+    """Deliver a progress event to the client over the configured channel (design D7).
 
-    async def notify(self, booking: Booking, subject: str, body: str) -> None: ...
+    Generalized from "deliver the report" to "deliver any progress event". A report is one ``kind``
+    among many (contact_ready, sent, hotel_replied, report, …). The adapter resolves the client's
+    channel address via :class:`ChannelSessionRepository` and renders per channel (email keeps its
+    adapter; Telegram has its own). Idempotent on ``booking_id`` + ``kind`` across activity retries.
+    """
+
+    async def notify(self, event: ProgressEvent) -> None: ...
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """One user-visible progress notification (design D7 / client-communication spec).
+
+    Carried by the generalized :class:`ClientNotifier`. ``subject`` is a short title; ``body`` is the
+    detail. For the email channel, ``subject`` is the email subject.
+    """
+
+    client_token: ClientToken
+    booking_id: BookingId
+    kind: str  # e.g. "contact_ready", "sent", "hotel_replied", "report"
+    subject: str
+    body: str
+
+    def __post_init__(self) -> None:
+        if not self.kind.strip():
+            raise ValueError("progress event kind must not be empty")
+        if not self.subject.strip():
+            raise ValueError("progress event subject must not be empty")
+        if not self.body.strip():
+            raise ValueError("progress event body must not be empty")
 
 
 @runtime_checkable
@@ -85,6 +136,8 @@ class WorkflowGateway(Protocol):
     async def signal_delivery_failure(
         self, booking_id: BookingId, severity: str, description: str
     ) -> None: ...
+
+    async def cancel_booking(self, booking_id: BookingId) -> None: ...
 
 
 # --- Agent ports (LangGraph-backed; faked in tests) ---------------------------------
@@ -120,6 +173,7 @@ class ReportBuilder(Protocol):
 
 __all__ = [
     "BookingRepository",
+    "ChannelSessionRepository",
     "ClientMessage",
     "ClientNotifier",
     "ClientRepository",
@@ -130,6 +184,7 @@ __all__ = [
     "InboundMailNormalizer",
     "NegotiationAgent",
     "OutboundMailGateway",
+    "ProgressEvent",
     "ReportBuilder",
     "WorkflowGateway",
 ]

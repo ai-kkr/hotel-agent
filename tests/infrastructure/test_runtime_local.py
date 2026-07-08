@@ -77,3 +77,59 @@ def test_build_local_app_rejects_non_stub_provider(agents, session_maker):
             session_maker=session_maker,
             worker=MagicMock(),
         )
+
+
+def test_build_local_app_wires_mailbox_and_telegram(settings, agents, session_maker):
+    settings = settings.model_copy(update={"telegram_bot_token": "123:abc", "bot_api_secret": "s3cret"})
+    from langgraph.checkpoint.memory import InMemorySaver
+    from tests.agents.fakes import FakeChatModel
+
+    from infrastructure.agents.surface import SurfaceComponents
+    from infrastructure.agents.tools import FakeWebFetcher, FakeWebSearcher
+
+    components = SurfaceComponents(
+        model=FakeChatModel(),
+        searcher=FakeWebSearcher(),
+        fetcher=FakeWebFetcher(),
+        checkpointer=InMemorySaver(),
+    )
+    runtime = build_local_app(
+        settings,
+        temporal_client=MagicMock(name="temporal_client"),
+        agents=agents,
+        session_maker=session_maker,
+        worker=MagicMock(name="worker"),
+        surface_components=components,
+    )
+    # The Telegram adapter is composed when a bot token + surface components are provided.
+    assert runtime.telegram is not None
+    # The bot-facing mailbox endpoint is wired.
+    assert runtime.app.state.webhook_deps.mailbox is not None
+    assert runtime.app.state.webhook_deps.settings.bot_api_secret == "s3cret"
+
+
+def test_build_local_app_no_telegram_without_token(settings, agents, session_maker):
+    from langgraph.checkpoint.memory import InMemorySaver
+    from tests.agents.fakes import FakeChatModel
+
+    from infrastructure.agents.surface import SurfaceComponents
+    from infrastructure.agents.tools import FakeWebFetcher, FakeWebSearcher
+
+    # Force no token: isolate from a real .env that may set KKR_TELEGRAM_BOT_TOKEN.
+    settings = settings.model_copy(update={"telegram_bot_token": ""})
+    runtime = build_local_app(
+        settings,
+        temporal_client=MagicMock(name="temporal_client"),
+        agents=agents,
+        session_maker=session_maker,
+        worker=MagicMock(name="worker"),
+        surface_components=SurfaceComponents(
+            model=FakeChatModel(),
+            searcher=FakeWebSearcher(),
+            fetcher=FakeWebFetcher(),
+            checkpointer=InMemorySaver(),
+        ),
+    )
+    # No bot token → no Telegram adapter, but mailbox is still wired (bot may run separately).
+    assert runtime.telegram is None
+    assert runtime.app.state.webhook_deps.mailbox is not None

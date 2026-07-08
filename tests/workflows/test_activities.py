@@ -72,10 +72,10 @@ class FakeGateway:
 
 class FakeNotifier:
     def __init__(self) -> None:
-        self.notified: list[tuple[str, str]] = []
+        self.notified: list[tuple[str, str, str, str]] = []  # (kind, booking_id, subject, body)
 
-    async def notify(self, booking: Booking, subject: str, body: str) -> None:
-        self.notified.append((subject, body))
+    async def notify(self, event) -> None:
+        self.notified.append((event.kind, event.booking_id, event.subject, event.body))
 
 
 def _extracted() -> ExtractedBooking:
@@ -215,11 +215,28 @@ class TestRelayToClient:
         activities, fakes = _activities(bookings=bookings)
         await activities.relay_to_client("b1", "Subject", "Body")
         notifier: FakeNotifier = fakes["notifier"]  # type: ignore[assignment]
-        assert notifier.notified == [("Subject", "Body")]
+        # relay_to_client delivers the report as a progress event (kind="report").
+        assert notifier.notified == [("report", "b1", "Subject", "Body")]
 
     async def test_silent_when_booking_missing(self) -> None:
         activities, fakes = _activities()
         await activities.relay_to_client("missing", "S", "B")
+        notifier: FakeNotifier = fakes["notifier"]  # type: ignore[assignment]
+        assert notifier.notified == []
+
+
+class TestNotifyProgress:
+    async def test_pushes_progress_event_with_kind(self) -> None:
+        bookings = InMemoryBookingRepository()
+        await bookings.save(Booking.start("b1", "tok", HotelContact(hotel_name="Grand", email=EmailAddress("h@x.com"))))
+        activities, fakes = _activities(bookings=bookings)
+        await activities.notify_progress("b1", "sent", "Message sent", "I've sent the request.")
+        notifier: FakeNotifier = fakes["notifier"]  # type: ignore[assignment]
+        assert notifier.notified == [("sent", "b1", "Message sent", "I've sent the request.")]
+
+    async def test_silent_when_booking_missing(self) -> None:
+        activities, fakes = _activities()
+        await activities.notify_progress("missing", "sent", "S", "B")
         notifier: FakeNotifier = fakes["notifier"]  # type: ignore[assignment]
         assert notifier.notified == []
 

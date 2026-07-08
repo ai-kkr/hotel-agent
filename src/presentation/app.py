@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from presentation.api import router as api_router
 from presentation.container import WebhookDeps
+from presentation.local_debug import router as local_debug_router
 from presentation.webhooks import router as webhook_router
 
 
@@ -16,4 +17,5 @@ def create_app(*, webhook_deps: WebhookDeps | None = None) -> FastAPI:
         app.state.webhook_deps = webhook_deps
     app.include_router(webhook_router)
     app.include_router(api_router)
+    app.include_router(local_debug_router)
     return app

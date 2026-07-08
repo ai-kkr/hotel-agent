@@ -5,13 +5,43 @@ Deployment, mail infrastructure, and observability notes for the concierge agent
 ## Components
 
 - **API/process** — FastAPI app (`presentation.app.create_app`) serving `/webhooks/{provider}/inbound`,
-  `/webhooks/{provider}/status`, `/api/client-message`.
+  `/webhooks/{provider}/status`, `/api/client-message`, and the bot-facing `/api/client-mailbox`.
 - **Temporal worker** — `infrastructure.workflows.worker.run_worker` running `BookingWorkflow` +
-  `ConciergeActivities` on the configured task queue.
-- **PostgreSQL** — domain store (`bookings`, `clients`, `topics`, `messages`) and the LangGraph
-  `PostgresSaver` checkpoint tables (same cluster, separate schema is fine).
+  `ConciergeActivities` on the configured task queue. The worker also pushes user-visible progress
+  events to the client's channel (Telegram chat or email) via the generalized notifier.
+- **PostgreSQL** — domain store (`bookings`, `clients`, `topics`, `messages`, `channel_sessions`)
+  and the LangGraph `PostgresSaver` checkpoint tables (same cluster, separate schema is fine).
 - **Temporal server** — durable execution spine.
 - **Mailgun** — inbound catch-all route + outbound sending (v1; swappable via adapter config).
+- **Telegram bot** — a separate process (design D10) that polls/webhooks Telegram, drives the
+  surface-agnostic conversational agent, and calls the API over a shared secret. It does not own
+  booking state; mutations emit intents executed by the worker.
+
+## Telegram surface — design D1/D4/D5/D7/D10
+
+The Telegram surface layers a live conversational agent over the durable core without duplicating
+intake/extraction/negotiation:
+
+- **Bot → API auth** — the bot calls `POST /api/client-mailbox` (and `/api/client-message`) with the
+  shared secret `KKR_BOT_API_SECRET` in `X-Bot-Secret` (or `Authorization: Bearer <secret>`), not
+  user credentials. The endpoint is disabled (503) when the secret is unset; a wrong/missing secret
+  is rejected with 401. `get_user_mailbox` is the only bot-facing creator; it lazily registers a
+  private `c.<token>@` mailbox (never shown to the user) and binds a `ChannelSession`
+  (`client_token ↔ chat_id`).
+- **Inbound** — a chat message routes to the surface agent thread keyed by the client's
+  `ChannelSession` (`chat_id`). A forwarded confirmation is delegated to `ChatIntakeService` → the
+  shared extractor + `start_booking` (chat-origin clients skip SPF/DKIM; the secret mailbox is the
+  identity anchor). `RequestUserDecision` renders as an inline keyboard; a button press resumes the
+  agent with the chosen option.
+- **Outbound progress** — the worker emits progress events on user-visible transitions
+  (`contact_ready`, `sent`, `hotel_replied`, `report`, `cancelled`) via the generalized
+  `ClientNotifier`, routed to the client's channel through `ChannelSession` (Telegram chat if a
+  session exists, else email) and coalesced to avoid flooding.
+- **Cancellation** — `delete_task` emits a `CancelBooking` intent; `CancellationService` cancels the
+  Temporal workflow (`workflow_id == booking_id`) and moves the booking to `CANCELLED` idempotently.
+- **Config** — `KKR_TELEGRAM_BOT_TOKEN` (empty disables the adapter), `KKR_TELEGRAM_POLLING`
+  (true = long-poll; false = webhook), `KKR_BOT_API_SECRET`. Run the bot as its own process in
+  production; locally `main_local.py` composes it in-process when the token is set.
 
 ## DNS (`*@kkr-hotel.com`) — spec 10.1
 

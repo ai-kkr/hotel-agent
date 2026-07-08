@@ -159,7 +159,7 @@ class TestForwardToReport:
         await activities.relay_to_client("wt", "Your report", report)
 
         assert len(gateway.sent) == 1 and gateway.sent[0][1] == "stay@grand.com"  # type: ignore[index]
-        assert any("report" in s.lower() for s, _ in notifier.notified)
+        assert any(kind == "report" and "report" in subject.lower() for kind, _bid, subject, _body in notifier.notified)
         bookings: InMemoryBookingRepository = fakes["bookings"]  # type: ignore[assignment]
         saved = await bookings.get("wt")
         assert saved is not None and all(t.status is TopicStatus.RESOLVED for t in saved.topics)

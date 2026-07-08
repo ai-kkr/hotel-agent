@@ -72,6 +72,17 @@ SIDE_EFFECT_RETRY_POLICY = RetryPolicy(
 REPORT_SUBJECT = "Your hotel concierge report"
 NEED_INFO_SUBJECT = "We need a bit more information"
 
+# Patch marker for progress-push (design D7 / task 7.1). New runs emit user-visible progress
+# notifications; pre-patch histories replay under the old (report-only) behavior. Per the workflow
+# versioning contract above, any new activity call MUST be gated like this.
+PROGRESS_PUSH_PATCH = "progress-push"
+
+PROGRESS_SUBJECTS = {
+    "contact_ready": "We're ready to contact the hotel",
+    "sent": "Message sent to the hotel",
+    "hotel_replied": "The hotel replied",
+}
+
 
 @dataclass
 class PendingEvent:
@@ -216,7 +227,12 @@ class BookingWorkflow:
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=DISCOVERY_RETRY_POLICY,
         )
-        return d.apply_contact(state, contact)
+        new_state = d.apply_contact(state, contact)
+        if new_state.lifecycle == "contact_ready":
+            await self._notify_progress(
+                new_state, "contact_ready", f"I found a contact for {new_state.hotel.hotel_name}."
+            )
+        return new_state
 
     async def _negotiate(  # pragma: no cover - exercised by gated Temporal E2E
         self,
@@ -261,6 +277,9 @@ class BookingWorkflow:
                     await self._send_email(state, intent)
                     state = d.record_email_sent(state, intent.step)
                     await self._persist(state)
+                    await self._notify_progress(
+                        state, "sent", f"I've sent the request to {state.hotel.hotel_name}."
+                    )
                     event = await self._await_event(reply_timeout_seconds)
                     if event.kind == "timeout":
                         state, give_up = d.on_timeout(state, followup_max)
@@ -282,6 +301,9 @@ class BookingWorkflow:
                             ],
                             start_to_close_timeout=ACTIVITY_TIMEOUT,
                             retry_policy=SIDE_EFFECT_RETRY_POLICY,
+                        )
+                        await self._notify_progress(
+                            state, "hotel_replied", "The hotel got back to us — I'll update you shortly."
                         )
                         trigger_kind, trigger_body, trigger_subject = "hotel_reply", event.body, event.subject
                     elif event.kind == "followup":
@@ -390,6 +412,17 @@ class BookingWorkflow:
         await workflow.execute_activity(
             ConciergeActivities.update_booking_state,
             args=[state],
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=SIDE_EFFECT_RETRY_POLICY,
+        )
+
+    async def _notify_progress(self, state: BookingState, kind: str, body: str) -> None:  # pragma: no cover - exercised by gated Temporal E2E
+        """Push a user-visible progress event (design D7). Gated behind the progress-push patch."""
+        if not workflow.patched(PROGRESS_PUSH_PATCH):
+            return
+        await workflow.execute_activity(
+            ConciergeActivities.notify_progress,
+            args=[state.booking_id, kind, PROGRESS_SUBJECTS.get(kind, kind), body],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=SIDE_EFFECT_RETRY_POLICY,
         )

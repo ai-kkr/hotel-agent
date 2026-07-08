@@ -7,14 +7,14 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 
-from domain.application import InboundDispatcher, IntakeService
+from domain.application import InboundDispatcher, IntakeService, MailboxService
 from domain.ports import InboundMailNormalizer, WorkflowGateway
 from infrastructure.config import Settings
 
 
 @dataclass
 class WebhookDeps:
-    """Wiring handed to the webhook router: provider signing key + collaborators."""
+    """Wiring handed to the presentation routers: provider signing key + collaborators."""
 
     signing_key: str
     normalizer: InboundMailNormalizer
@@ -22,6 +22,7 @@ class WebhookDeps:
     gateway: WorkflowGateway
     intake: IntakeService
     settings: Settings
+    mailbox: MailboxService | None = None  # bot-facing mailbox resolution (None = endpoint disabled)
 
 
 def build_webhook_deps(
@@ -30,6 +31,7 @@ def build_webhook_deps(
     dispatcher: InboundDispatcher,
     gateway: WorkflowGateway,
     intake: IntakeService,
+    mailbox: MailboxService | None = None,
 ) -> WebhookDeps:
     signing_key = settings.mailgun_signing_key  # provider-specific; Mailgun on v1
     return WebhookDeps(
@@ -39,6 +41,7 @@ def build_webhook_deps(
         gateway=gateway,
         intake=intake,
         settings=settings,
+        mailbox=mailbox,
     )
 
 

@@ -26,6 +26,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from infrastructure.agents.factory import build_agents
 from infrastructure.agents.models import build_model
+from infrastructure.agents.surface import SurfaceComponents
 from infrastructure.agents.tools import FakeWebSearcher, HttpxWebFetcher
 from infrastructure.config import get_settings
 from infrastructure.db.session import create_engine, session_factory
@@ -42,14 +43,24 @@ async def run_local() -> None:
     session_maker = session_factory(engine)
     temporal_client = await build_client(settings)
 
+    model = build_model(settings)
+    checkpointer = InMemorySaver()  # zero-setup local checkpoints; swap to PostgresSaver for prod-parity
+    # Web search has no keyless public backend; FakeWebSearcher is a local placeholder.
+    # Swap for HttpxWebSearcher(endpoint=..., api_key=...) to exercise the discoverer for real.
+    searcher = FakeWebSearcher()
+    fetcher = HttpxWebFetcher()
+
     agents = build_agents(
         settings,
-        model=build_model(settings),
-        checkpointer=InMemorySaver(),  # zero-setup local checkpoints; swap to PostgresSaver for prod-parity
-        # Web search has no keyless public backend; FakeWebSearcher is a local placeholder.
-        # Swap for HttpxWebSearcher(endpoint=..., api_key=...) to exercise the discoverer for real.
-        searcher=FakeWebSearcher(),
-        fetcher=HttpxWebFetcher(),
+        model=model,
+        checkpointer=checkpointer,
+        searcher=searcher,
+        fetcher=fetcher,
+    )
+    # The surface agent shares the negotiation stack's LLM + web backends + checkpointer. Wired into
+    # the Telegram adapter only when KKR_TELEGRAM_BOT_TOKEN is set (design D10: bot may run separately).
+    surface_components = SurfaceComponents(
+        model=model, searcher=searcher, fetcher=fetcher, checkpointer=checkpointer
     )
 
     http_client = httpx.AsyncClient()
@@ -59,12 +70,22 @@ async def run_local() -> None:
         agents=agents,
         session_maker=session_maker,
         http_client=http_client,
+        surface_components=surface_components,
     )
 
     config = uvicorn.Config(runtime.app, host="127.0.0.1", port=8000, loop="asyncio", log_config=None)
     server = uvicorn.Server(config)
     server_task = asyncio.create_task(server.serve(), name="uvicorn")
     worker_task = asyncio.create_task(runtime.worker.run(), name="temporal-worker")
+    # Telegram inbound: long-poll getUpdates → surface agent (only when a bot token is configured).
+    telegram_task: asyncio.Task[None] | None = None
+    if runtime.telegram is not None:
+        from infrastructure.telegram.polling import run_telegram
+
+        telegram_task = asyncio.create_task(
+            run_telegram(runtime.telegram, poll_timeout=settings.telegram_poll_timeout_seconds),
+            name="telegram-poll",
+        )
     try:
         # server.serve() returns on SIGINT/SIGTERM (uvicorn installs its own handlers).
         await server_task
@@ -72,6 +93,8 @@ async def run_local() -> None:
         # Ctrl+C: asyncio.run() cancels all tasks; swallow the noise and shut down cleanly.
         pass
     finally:
+        if telegram_task is not None:
+            telegram_task.cancel()
         worker_task.cancel()
         await http_client.aclose()
         await engine.dispose()

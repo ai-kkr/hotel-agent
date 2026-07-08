@@ -183,6 +183,22 @@ class Booking:
     def advance(self, lifecycle: BookingLifecycle) -> None:
         self.lifecycle = lifecycle
 
+    @property
+    def is_cancelled(self) -> bool:
+        return self.lifecycle == BookingLifecycle.CANCELLED
+
+    @property
+    def is_active(self) -> bool:
+        """A booking is active unless it has reached a terminal lifecycle (cancelled or can't-progress)."""
+        return self.lifecycle not in (BookingLifecycle.CANCELLED, BookingLifecycle.CANT_PROGRESS)
+
+    def mark_cancelled(self) -> None:
+        """Idempotently move the booking to CANCELLED (design D8).
+
+        Repeated cancellation is a no-op: no further side-effects should be triggered by the caller.
+        """
+        self.lifecycle = BookingLifecycle.CANCELLED
+
     def increment_followup(self) -> int:
         self.followup_attempts += 1
         return self.followup_attempts
@@ -207,3 +223,25 @@ class Client:
     name: str | None = None
 
     TOKEN_BYTES: ClassVar[int] = 12  # for generators in infrastructure; documented here
+
+
+@dataclass(frozen=True)
+class ChannelSession:
+    """Binds a client to a per-channel address (design D5 / client-communication spec).
+
+    The identity seam for non-email channels: outbound delivery resolves an address from a client
+    (and vice-versa) without coupling to any specific channel. A client MAY have sessions on
+    multiple channels (e.g. a Telegram ``chat_id``).
+
+    ``address`` is channel-specific (Telegram chat id, WhatsApp phone, …); it is NOT an email.
+    """
+
+    client_token: ClientToken
+    channel: Channel
+    address: str  # channel-specific (e.g. Telegram chat_id)
+
+    def __post_init__(self) -> None:
+        if not self.client_token:
+            raise ValueError("client_token must not be empty")
+        if not self.address:
+            raise ValueError("channel address must not be empty")
