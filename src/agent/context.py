@@ -21,3 +21,4 @@ class EmailContext(TypedDict):
     user_email: str | None
     #: Client id, to bind the sent email record (``outbound_emails``) for reply matching.
     client_id: int | None
+    model_name: str | None

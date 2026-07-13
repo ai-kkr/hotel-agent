@@ -19,20 +19,36 @@ log = get_logger(__name__)
 async def search_internet(
     query: str,
     runtime: ToolRuntime[EmailContext, EmailState],
+    domain: str | None = None,
 ):
-    """Search the web for the given query to find information about a hotel.
+    """Search the web via Tavily to find a hotel's contact email, official website, or other
+    details missing from the forwarded booking confirmation.
 
-    Use this to look up a hotel's contact email, official website, or other details when the
-    forwarded booking confirmation does not include them. Returns a summary of search results.
+    This is a SEMANTIC search engine, NOT Google — it does not parse search operators. Write the
+    query in natural language.
+
+    RULES for the query:
+    - NEVER use operators: `site:`, `OR`, `AND`, `NOT`. They are silently ignored and turn the
+      query into noise. In particular, `site:example.com` does NOT restrict to that domain — use
+      the `domain` argument instead.
+    - Write a short natural-language question or phrase (< ~400 chars), e.g.
+      "contact email for Flamingo Hotel Oludeniz" or "official website and booking email of
+      Hotel X in Lisbon".
+    - You MAY quote an exact phrase with double quotes, e.g. `"reservation@"`.
+    - Keep it focused: one hotel, one intent per query.
 
     Args:
-        query: A concise web search query (e.g. hotel name + "contact email").
+        query: A concise natural-language search query. No `site:` / boolean operators.
+        domain: Optional bare domain (e.g. "flamingohoteloludeniz.com") to restrict results to
+            that site only — this is the correct way to scope to a hotel's own website, since
+            `site:` in the query is ignored. Omit for a general web search.
     """
-    log.info("tool.search_internet", query=query)
+    log.info("tool.search_internet", query=query, domain=domain)
     from src.context import get_context  # lazy: avoids a context↔tools import cycle
 
     client = get_context().tavily_client
-    res = await asyncio.to_thread(client.search, query)
+    search_kwargs: dict = {"include_domains": [domain]} if domain else {}
+    res = await asyncio.to_thread(client.search, query, **search_kwargs)
     rounds = runtime.state.get("search_rounds", 0) + 1
     log.info("tool.search_internet.done", query=query, search_rounds=rounds)
     return Command(

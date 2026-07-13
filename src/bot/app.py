@@ -10,6 +10,7 @@ lg = get_logger(__name__)
 # Registering these via setMyCommands is what makes Telegram surface them at all.
 DEFAULT_COMMANDS = [
     BotCommand(command="start", description="Запустить / показать адрес для пересылки"),
+    BotCommand(command="new", description="Сбросить контекст, начать заново"),
 ]
 
 

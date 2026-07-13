@@ -28,14 +28,15 @@ log = get_logger(__name__)
 def _format_booking(state: EmailState) -> str:
     """Render the booking fields as a compact, model-friendly context block for the letter."""
     guests = ", ".join(state.get("guests") or []) or "—"
-    return "\n".join(
-        [
-            f"Отель: {state.get('hotel_name') or '—'}",
-            f"Заезд: {state.get('from_date') or '—'}",
-            f"Выезд: {state.get('to_date') or '—'}",
-            f"Гости: {guests}",
-        ]
-    )
+    ref = state.get("booking_ref")
+    lines = [
+        f"Отель: {state.get('hotel_name') or '—'}",
+        f"Код брони: {ref or '—'}",
+        f"Заезд: {state.get('from_date') or '—'}",
+        f"Выезд: {state.get('to_date') or '—'}",
+        f"Гости: {guests}",
+    ]
+    return "\n".join(lines)
 
 
 async def _compose_letter(state: EmailState, wishes: list[str]) -> str:
@@ -57,7 +58,18 @@ async def _compose_letter(state: EmailState, wishes: list[str]) -> str:
                     f"{wishes_block}"
                 )
             ),
-        ]
+        ],
+        config={
+            "tags": [
+                # Suppress this internal LLM call from the graph's ``messages`` stream: otherwise
+                # its AIMessage (the composed letter body) inherits the graph callback config via
+                # contextvars and leaks into ``stream_graph``, which forwards it to Telegram.
+                # ``nostream`` is langgraph's TAG_NOSTREAM — on_chat_model_start skips runs tagged
+                # with it (langgraph/pregel/_messages.py). The result still comes back from
+                # ``ainvoke`` as usual; only streaming/observability is suppressed.
+                "nostream",
+            ]
+        },
     )
     return response.content if isinstance(response.content, str) else str(response.content)
 
@@ -120,6 +132,9 @@ async def send_wishes_to_hotel(
     of the hotel. The sent message id is stored so the inbound webhook can later match a hotel
     reply by its ``In-Reply-To`` header.
 
+    After calling this tool, STOP. The tool already tells the guest the progress. NEVER write the
+    letter body in chat and do not re-summarise it — the guest does not see the letter.
+
     Args:
         wishes: The user's wishes to send to the hotel.
     """
@@ -132,8 +147,10 @@ async def send_wishes_to_hotel(
         )
     log.info("tool.send_wishes_to_hotel", wishes=wishes)
     letter = await _compose_letter(state, wishes)
+    ref = state.get("booking_ref")
+    ref_part = f" [{ref}]" if ref else ""
     subject = (
-        f"Booking inquiry — {state.get('hotel_name') or ''} "
+        f"Booking inquiry — {state.get('hotel_name') or ''}{ref_part} "
         f"({state.get('from_date') or '?'}…{state.get('to_date') or '?'})"
     )
     runtime.stream_writer(MessageText(text="Отправляю письмо в отель…"))
@@ -150,7 +167,16 @@ async def send_wishes_to_hotel(
         update={
             "user_wishes": wishes,
             "last_outbound_message_id": message_id,
-            "messages": [ack(runtime)],
+            "messages": [
+                ack(
+                    runtime,
+                    content=(
+                        "Письмо отправлено, статус уже показан госту. На этом ход завершён: "
+                        "БОЛЬШЕ НИЧЕГО НЕ ПИШИ — не выводи и не пересказывай текст письма, "
+                        "гостю он не нужен."
+                    ),
+                )
+            ],
         }
     )
 
@@ -165,6 +191,9 @@ async def reply_to_hotel(
     ``message`` is the full reply body, written by you in the hotel's language, plain text, no
     markdown. The tool sets ``In-Reply-To``/``References`` and a ``Re:`` subject so it threads
     under the hotel's email. Only call this after a hotel reply has arrived.
+
+    After calling this tool, STOP. NEVER echo the reply body back into the chat and do not
+    re-summarise it — the guest does not see the reply text.
 
     Args:
         message: The reply body to send to the hotel.
@@ -191,6 +220,14 @@ async def reply_to_hotel(
     return Command(
         update={
             "last_outbound_message_id": message_id,
-            "messages": [ack(runtime)],
+            "messages": [
+                ack(
+                    runtime,
+                    content=(
+                        "Ответ отелю отправлен. На этом ход завершён: БОЛЬШЕ НИЧЕГО НЕ ПИШИ — "
+                        "не выводи и не пересказывай текст ответа, гостю он не нужен."
+                    ),
+                )
+            ],
         }
     )

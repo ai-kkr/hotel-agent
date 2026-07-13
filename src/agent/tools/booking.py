@@ -31,6 +31,7 @@ REQUIRED_BOOKING_FIELDS: tuple[str, ...] = (
 #: Russian labels for the booking fields, in display order.
 _BOOKING_LABELS: tuple[tuple[str, str], ...] = (
     ("hotel_name", "Отель"),
+    ("booking_ref", "Номер брони"),
     ("from_date", "Заезд"),
     ("to_date", "Выезд"),
     ("hotel_email", "Email отеля"),
@@ -55,6 +56,7 @@ def missing_booking_fields(state: EmailState) -> list[str]:
 def _format_booking_summary(
     *,
     hotel_name: str | None,
+    booking_ref: str | None,
     from_date: str | None,
     to_date: str | None,
     hotel_email: str | None,
@@ -67,6 +69,7 @@ def _format_booking_summary(
     """
     values: dict[str, object] = {
         "hotel_name": hotel_name,
+        "booking_ref": booking_ref,
         "from_date": from_date,
         "to_date": to_date,
         "hotel_email": hotel_email,
@@ -91,6 +94,7 @@ def _format_booking_summary(
 async def set_booking_info(
     runtime: ToolRuntime[EmailContext, EmailState],
     hotel_name: str | None = None,
+    booking_ref: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
     hotel_email: str | None = None,
@@ -105,6 +109,8 @@ async def set_booking_info(
 
     Args:
         hotel_name: Hotel name.
+        booking_ref: Booking reference / confirmation number, if the confirmation carries one.
+            Optional — not every voucher has a code; leave null when absent.
         from_date: Check-in date (``YYYY-MM-DD``).
         to_date: Check-out date (``YYYY-MM-DD``).
         hotel_email: Hotel contact email.
@@ -115,6 +121,7 @@ async def set_booking_info(
     log.info(
         "tool.set_booking_info",
         hotel_name=hotel_name,
+        booking_ref=booking_ref,
         from_date=from_date,
         to_date=to_date,
         hotel_email=hotel_email,
@@ -123,6 +130,7 @@ async def set_booking_info(
     )
     summary = _format_booking_summary(
         hotel_name=hotel_name,
+        booking_ref=booking_ref,
         from_date=from_date,
         to_date=to_date,
         hotel_email=hotel_email,
@@ -134,6 +142,7 @@ async def set_booking_info(
     return Command(
         update={
             "hotel_name": hotel_name,
+            "booking_ref": booking_ref,
             "from_date": from_date,
             "to_date": to_date,
             "hotel_email": hotel_email,

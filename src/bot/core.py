@@ -1,5 +1,5 @@
 from aiogram import Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import ErrorEvent, Message
 from aiogram.utils.text_decorations import html_decoration
 
@@ -50,6 +50,34 @@ async def command_start_handler(message: Message) -> None:
             inbox_address=html_decoration.quote(client.inbox or "" if client else ""),
         ),
     )
+
+
+@dp.message(Command("new"))
+async def command_new_handler(message: Message) -> None:
+    """Reset the agent's conversation memory for the current client.
+
+    Deletes every checkpointed message and state value for the client's thread
+    (``AsyncPostgresSaver.adelete_thread``), so the next message starts a blank conversation with
+    no prior context — booking details, wishes, hotel-threading state, message history, everything.
+
+    Registered before ``chat_handler``: aiogram dispatches to the first matching handler, and
+    ``"/new"`` also matches ``F.text``, so order matters. The ``outbound_emails`` rows live in
+    Postgres (not the checkpoint), so a delayed hotel reply still routes correctly — into the now
+    empty thread.
+    """
+    assert message.from_user is not None, "message.from_user is None"
+    ctx = get_context()
+    async with session_context(ctx.session_factory) as session:
+        repo = ClientRepository(session)
+        client: ClientORM | None = await repo.get_client_by_telegram_id(message.from_user.id)
+
+    if client is not None:
+        saver = ctx.checkpoint_saver
+        assert saver is not None, "checkpoint_saver is not initialized"
+        await saver.adelete_thread(thread_id=client.thread_id)
+        log.info("bot.session_reset", client_id=client.id, thread_id=client.thread_id)
+
+    await message.answer("Контекст сброшен — начинаем с чистого листа.")
 
 
 @dp.message(F.text)

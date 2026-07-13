@@ -6,6 +6,8 @@ Agents receive a ``langchain_core.language_models.BaseChatModel``. Production bu
 
 from __future__ import annotations
 
+from typing import Any
+
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -24,6 +26,9 @@ def build_model(
     - ``openai`` (default) — e.g. ``openai:gpt-4o-mini`` or bare ``gpt-4o-mini``.
     - ``zai`` — Z.AI (OpenAI-compatible), e.g. ``zai:glm-5.2``; routed through the OpenAI adapter
       with ``base_url = settings.zai_api_base`` and ``api_key = settings.zai_api_key``.
+    - ``openrouter`` — OpenRouter (OpenAI-compatible aggregator), e.g.
+      ``openrouter:anthropic/claude-3.5-sonnet``; routed through the OpenAI adapter with
+      ``base_url = settings.openrouter_api_base`` and ``api_key = settings.openrouter_api_key``.
 
     Unknown prefixes raise a clear configuration error rather than failing later inside an agent.
     """
@@ -46,8 +51,25 @@ def build_model(
                 base_url=settings.zai_api_base,
                 api_key=settings.zai_api_key,
             )
+        case "openrouter":
+            if not settings.openrouter_api_key:
+                raise ValueError(
+                    "KKR_OPENROUTER_API_KEY is required when KKR_LLM_MODEL uses the "
+                    "'openrouter:' provider"
+                )
+            # ``reasoning_effort`` is sent top-level; OpenRouter maps it to per-model thinking
+            # controls (e.g. Gemini ``thinkingLevel``). Applied only here — zai/openai may reject
+            # the unknown field. ``None`` => provider default.
+            kwargs: dict[str, Any] = {
+                "temperature": 0,
+                "base_url": settings.openrouter_api_base,
+                "api_key": settings.openrouter_api_key,
+            }
+            if settings.openrouter_reasoning_effort:
+                kwargs["reasoning_effort"] = settings.openrouter_reasoning_effort
+            return init_chat_model(f"openai:{model_override or name}", **kwargs)
         case _:
             raise ValueError(
                 f"unknown LLM provider {provider!r} in llm_model={model!r} "
-                "(expected 'openai' or 'zai')"
+                "(expected 'openai', 'zai', or 'openrouter')"
             )

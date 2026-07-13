@@ -42,10 +42,12 @@ email отеля, составляет и отправляет письмо на
 
 ### `set_booking_info` — [`booking.py`](../src/agent/tools/booking.py)
 
-Записывает детали брони по мере того, как агент их узнаёт: `hotel_name`, `from_date`, `to_date`,
-`hotel_email`, `guests`, `hotel_language`. Любое поле можно опустить (`None`) — оно останется
-нетронутым (см. редьюсер `booking_field` в [architecture.md](architecture.md#reducer-booking_field)).
-Все шесть полей должны быть заполнены до `send_wishes_to_hotel`.
+Записывает детали брони по мере того, как агент их узнаёт: `hotel_name`, `booking_ref`,
+`from_date`, `to_date`, `hotel_email`, `guests`, `hotel_language`. Любое поле можно опустить
+(`None`) — оно останется нетронутым (см. редьюсер `booking_field` в [architecture.md](architecture.md#reducer-booking_field)).
+Шесть обязательных полей (`hotel_name`, `from_date`, `to_date`, `hotel_email`, `guests`,
+`hotel_language`) должны быть заполнены до `send_wishes_to_hotel`; `booking_ref` (код/номер
+брони) — **опциональный**, его может не быть в подтверждении, отправку он не блокирует.
 
 ### `send_wishes_to_hotel` — [`mail.py`](../src/agent/tools/mail.py)
 
@@ -53,7 +55,10 @@ email отеля, составляет и отправляет письмо на
 
 - Проверяет, что вся бронь заполнена (`missing_booking_fields`); если чего-то не хватает —
   поднимает `SelfCorrectionError` (агент уточнит у гостя или дозаполнит `set_booking_info`).
-- Генерирует текст письма LLM-кой по промпту `SYSTEM_LETTER_TO_HOTEL` на `hotel_language`.
+- Генерирует текст письма LLM-кой по промпту `SYSTEM_LETTER_TO_HOTEL` на `hotel_language`;
+  в контекст письма отдаётся и `booking_ref` (если есть) — промпт ссылается на код брони.
+- Тема письма: `Booking inquiry — <отель>[ <код брони>] (<заезд>…<выезд>)` — код брони попадает
+  в subject, когда он есть.
 - В **dev-режиме** (`settings.is_dev`) письмо уходит на email самого гостя (`user_email`),
   а не отелю — чтобы проверять отправку без реального отеля.
 - `From` = проверенный отправный адрес (`mailtrap_from_email`), `Reply-To` = inbox гостя — чтобы
@@ -107,4 +112,8 @@ email отеля, составляет и отправляет письмо на
   ~4 с);
 - стримит `custom`-сообщения (narration тулов) сразу в чат;
 - накапливает чанки `AIMessage` по `message.id` и отправляет каждое итоговое сообщение целиком;
-- перед отправкой конвертирует Markdown → Telegram entities и подставляет `$user_inbox`.
+  при этом контент `AIMessage` **с tool-call подавляется** — это внутренняя «мысль»/черновик
+  агента (например, текст письма отелю, который он набросал перед вызовом тулы), гостю он не
+  нужен; наррация идёт через `inform_step` и прогресс самих тул;
+- перед отправкой конвертирует Markdown → Telegram entities и подставляет `$user_inbox`
+  (обёрнутый в inline-code, чтобы ящик копировался одним тапом — см. [architecture.md](architecture.md#подстановка-user_inbox)).

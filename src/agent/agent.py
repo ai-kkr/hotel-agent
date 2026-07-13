@@ -10,7 +10,7 @@ from langchain.chat_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from .context import EmailContext
-from .middleware import SelfCorrectionMiddleware
+from .middleware import OpenRouterStickySessionMiddleware, SelfCorrectionMiddleware
 from .prompts import SYSTEM_MAIN
 from .state import EmailState
 from .tools import tools
@@ -25,7 +25,7 @@ def build_email_agent(model: BaseChatModel, checkpointer: BaseCheckpointSaver):
     return create_agent(
         model=model,
         tools=tools,
-        middleware=[SelfCorrectionMiddleware()],
+        middleware=[SelfCorrectionMiddleware(), OpenRouterStickySessionMiddleware()],
         system_prompt=SYSTEM_MAIN,
         state_schema=EmailState,
         context_schema=EmailContext,

@@ -37,10 +37,12 @@
 
 `build_context()` ([`src/context.py`](../src/context.py)) создаёт все тяжёлые зависимости разово:
 `Bot` (aiogram), `MailtrapClient`, async-движок и `session_factory`, chat-модель (`build_model`),
-`TavilyClient` и сам граф агента (`build_email_agent` с `MemorySaver`-чекпоинтером). Затем
-`create_app(ctx)` собирает FastAPI-приложение, а `uvicorn.run` поднимает сервер. В
-`lifespan` приложения запускается задача polling'а бота, а при остановке — аккуратно
-гасится и закрывается http-сессия aiogram (иначе uvicorn виснет при завершении).
+`TavilyClient` и пул чекпоинтера LangGraph (`AsyncConnectionPool` для `AsyncPostgresSaver`,
+`open=False`). Сам граф агента и saver строятся **позже** — в `lifespan` приложения через
+`init_graph()` (см. ниже почему). Затем `create_app(ctx)` собирает FastAPI-приложение, а
+`uvicorn.run` поднимает сервер. В `lifespan`: открывается пул и применяется схема чекпоинтера
+(`setup()`), запускается задача polling'а бота, а при остановке — пул и http-сессия aiogram
+аккуратно гасятся (иначе uvicorn виснет при завершении) и сбрасываются очереди Langfuse.
 
 ### Контекст приложения — `src/context.py`
 
@@ -51,15 +53,19 @@ Tavily и `session_factory` **лениво**, прямо внутри тулы. 
 
 ### Telegram-бот — `src/bot`
 
-- [`core.py`](../src/bot/core.py) — `Dispatcher` с тремя обработчиками:
+- [`core.py`](../src/bot/core.py) — `Dispatcher` с обработчиками:
   - `/start` ([`command_start_handler`](../src/bot/core.py)) — регистрирует клиента (если ещё
     нет) и шлёт приветствие с личным адресом для пересылки брони;
+  - `/new` ([`command_new_handler`](../src/bot/core.py)) — сбрасывает контекст агента для клиента:
+    удаляет все чекпойнты треда через `AsyncPostgresSaver.adelete_thread` (история сообщений,
+    данные брони, wishes, threading-состояние — всё). Записи `outbound_emails` остаются в Postgres,
+    поэтому запоздавший ответ отеля всё равно смаршрутизируется — в уже пустой тред;
   - любое текстовое сообщение ([`chat_handler`](../src/bot/core.py)) — маршрутируется в агента
     через `stream_graph`. Сообщения, начинающиеся с `/`, игнорируются (неизвестная команда);
   - `@dp.errors()` — прокидывает исключения обработчиков в лог, чтобы aiogram не глотал их
     молча.
-- [`app.py`](../src/bot/app.py) — `run_bot()`: регистрирует список команд (`/start`) и запускает
-  `dp.start_polling`.
+- [`app.py`](../src/bot/app.py) — `run_bot()`: регистрирует список команд (`/start`, `/new`) и
+  запускает `dp.start_polling`.
 - [`templates.py`](../src/bot/templates.py) + `templates/greeting.md.j2` — Jinja-шаблон
   приветствия (адрес inbound-ящика подставляется в `<code>`).
 
@@ -163,8 +169,11 @@ DB-фабрика) тулы достают лениво через `get_context(
 
 Агент не знает реального адреса ящика гостя и пишет в ответах плейсхолдер `$user_inbox`
 дословно. Подстановка реального `ClientORM.inbox` делается при рендере сообщения в чат — уже
-**после** стриминга (чтобы плейсхолдер не разорвало между чанками). См. `_send_text` /
-`stream_graph` в [`src/agent/stream.py`](../src/agent/stream.py).
+**после** стриминга (чтобы плейсхолдер не разорвало между чанками) — и адрес **оборачивается в
+inline-code** entity. Entity строится явно по оффсетам в уже-сконвертированном тексте (`_code_entities_for`); инъекция backticks намеренно избегается — на длинных сообщениях с эмодзи telegramify-markdown сдвигает оффсеты code-span'ов, чтобы Telegram показал его моноширинно с копированием в один тап.
+См. `_send_text` / `stream_graph` в [`src/agent/stream.py`](../src/agent/stream.py). Публичная
+`send_formatted(bot, chat_id, text)` — тот же рендер без подстановки, используется вебхуком для
+уведомлений о входящих письмах.
 
 ### Markdown → entities
 
@@ -176,6 +185,8 @@ MarkdownV2-экранирования). Длинные сообщения реж
 
 ### Reducer `booking_field`
 
-Поля брони в `EmailState` используют редьюсер «keep existing when update is `None`». Это позволяет
+Поля брони в `EmailState` (`hotel_name`, `booking_ref`, `from_date`, `to_date`, `hotel_email`,
+`guests`, `hotel_language`) используют редьюсер «keep existing when update is `None`». Это позволяет
 агенту вызывать `set_booking_info` с любым подмножеством полей за один `Command(update=...)`, а
-пропущенные (`None`) оставить нетронутыми — вместо того чтобы затирать их.
+пропущенные (`None`) оставить нетронутыми — вместо того чтобы затирать их. Обязательных полей шесть
+(всё кроме `booking_ref`); `missing_booking_fields` проверяет именно их.

@@ -33,6 +33,9 @@ class EmailState(AgentState, total=False):
     hotel_email: Annotated[str | None, booking_field]
     guests: Annotated[list[str] | None, booking_field]
     hotel_language: Annotated[str | None, booking_field]  # "ru" | "zh" | "en"
+    #: Booking reference / confirmation number, if the confirmation carries one. Optional — not
+    #: every voucher has a code; when present it goes into the email subject and the letter body.
+    booking_ref: Annotated[str | None, booking_field]
 
     user_wishes: list[str]
     user_question: str | None

@@ -5,7 +5,7 @@ from aiogram.utils.text_decorations import html_decoration
 from fastapi import APIRouter
 from langchain_core.runnables import RunnableConfig
 
-from src.agent.stream import stream_graph
+from src.agent.stream import send_formatted, stream_graph
 from src.context import AppContext
 from src.db.models import ClientORM
 from src.db.repositories import ClientRepository, DuplicateForwardedEmailError
@@ -88,23 +88,20 @@ async def send_test_email(
             continue
         email = await client_repo.add_forwarded_email(client.id, msg)
         if client.telegram_id is not None:
-            await ctx.bot.send_message(
-                chat_id=client.telegram_id,
-                text=(
-                    f"Получил новое письмо от {html_decoration.quote(msg.from_ or 'неизвестного отправителя')}"
-                    f" с темой: {html_decoration.quote(msg.subject or '(без темы)')},"
-                    " приступаю к обработке"
+            await send_formatted(
+                ctx.bot,
+                client.telegram_id,
+                _format_inbound_notification(
+                    title="📨 Новое письмо",
+                    sender=msg.from_ or "неизвестный отправителя",
+                    subject=msg.subject,
+                    footer="Приступаю к обработке…",
                 ),
             )
         background_tasks.add_task(
             stream_graph,
             client=client,
             msg=f"forwarded email:\n{email.data.text_body}",
-        )
-
-        lg.info(
-            "Fetched inbound message",
-            message=msg.to_dict(),
         )
 
 
@@ -133,19 +130,57 @@ async def _handle_hotel_reply(
         subject=msg.subject,
         in_reply_to=msg.in_reply_to,
     )
-    await ctx.email_graph.aupdate_state(
+    await ctx.email_graph_or_raise().aupdate_state(
         config,
         {
             "last_hotel_message_id": msg.message_id,
             "last_hotel_subject": msg.subject,
         },
     )
+    if client.telegram_id is not None:
+        await send_formatted(
+            ctx.bot,
+            client.telegram_id,
+            _format_inbound_notification(
+                title="🏨 Ответ от отеля",
+                sender=msg.from_ or "отель",
+                subject=msg.subject,
+            ),
+        )
     body = msg.text_body or msg.html_body or ""
     background_tasks.add_task(
         stream_graph,
         client=client,
         msg=f"hotel reply:\n{body}",
     )
+
+
+def _format_inbound_notification(
+    *,
+    title: str,
+    sender: object,
+    subject: object,
+    footer: str | None = None,
+) -> str:
+    """Build an HTML notification about an inbound email for the chat.
+
+    Keeps to the formatting the agent itself uses (bold labels, no headers) so it renders
+    consistently via ``send_formatted`` (``parse_mode=HTML``). ``sender``/``subject`` come from the
+    Mailtrap ``MessageDetails`` model as ``None | str | Unset``; we normalise both to plain strings
+    and HTML-escape them, since they are uncontrolled email content.
+    """
+    sender_text = sender if isinstance(sender, str) and sender else "неизвестный отправитель"
+    subject_text = subject if isinstance(subject, str) and subject else "(без темы)"
+    q = html_decoration.quote
+    lines = [
+        f"<b>{q(title)}</b>",
+        f"<b>От:</b> {q(sender_text)}",
+        f"<b>Тема:</b> {q(subject_text)}",
+    ]
+    if footer:
+        lines.append("")
+        lines.append(footer)
+    return "\n".join(lines)
 
 
 async def _apply_client_email(

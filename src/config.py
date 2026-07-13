@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     # or protocols (e.g. https://api.z.ai/api/paas/v4/ for international PaaS credits).
     zai_api_key: str = ""
     zai_api_base: str = "https://open.bigmodel.cn/api/coding/paas/v4"
+    # OpenRouter (OpenAI-compatible aggregator). Used when llm_model is "openrouter:<model>".
+    # Model name should include the vendor prefix as OpenRouter expects (e.g. "anthropic/claude-3.5-sonnet").
+    openrouter_api_key: str = ""
+    openrouter_api_base: str = "https://openrouter.ai/api/v1"
+    # OpenRouter reasoning/thinking effort, applied only for the ``openrouter:`` provider.
+    # OpenRouter enum (maps to per-model settings, e.g. Gemini ``thinkingLevel``):
+    # ``xhigh | high | medium | low | minimal | none``. ``minimal`` = least thinking while still
+    # reasoning; ``none`` disables reasoning entirely where the model supports it.
+    # ``None`` leaves the provider default. See https://openrouter.ai/docs/api/reference/parameters.
+    openrouter_reasoning_effort: str | None = "minimal"
 
     # --- Outbound report delivery channel (v1 = email) ---
     client_channel: Literal["email"] = "email"

@@ -67,10 +67,14 @@ Mailtrap присылает входящие письма на `POST /send_test_
    полное тело письма.
 3. **Маршрутизация** ([`src/app/webhook.py`](../src/app/webhook.py)):
    - если `In-Reply-To` письма совпадает с записью в `outbound_emails` — это **ответ отеля**: в
-     state агента кладутся `last_hotel_message_id` / `last_hotel_subject`, и агенту подаётся ход
+     state агента кладутся `last_hotel_message_id` / `last_hotel_subject`, в чат гостя шлётся
+     уведомление «🏨 **Ответ отеля**» (отправитель + тема), и агенту подаётся ход
      `hotel reply:\n<body>`;
    - иначе — **пересланное письмо гостя**: адрес отправителя привязывается к клиенту (если ещё
-     не привязан), письмо сохраняется, и агенту подаётся ход `forwarded email:\n<body>`.
+     не привязан), письмо сохраняется, в чат шлётся уведомление «📨 **Новое письмо**»
+     (отправитель + тема + «приступаю к обработке»), и агенту подаётся ход
+     `forwarded email:\n<body>`.
+   - уведомления рендерятся через `send_formatted` (Markdown → entities, без `parse_mode`);
    - дубликаты пересланных писем (по `message_id` + `client_id`) игнорируются
      (`DuplicateForwardedEmailError`).
 
@@ -86,8 +90,9 @@ Mailtrap присылает входящие письма на `POST /send_test_
 ## Локальный dev-стек
 
 [`docker-compose.yml`](../docker-compose.yml) поднимает зависимости. Для текущего кода обязателен
-только **postgres** (`docker compose up -d postgres`). Прочие сервисы compose (temporal, langfuse
-и их инфраструктура) сохранены на будущее — текущее приложение их не использует.
+только **postgres** (`docker compose up -d postgres`). Langfuse (трейсинг LLM) — опционален:
+интегрирован, но выключен до явного `KKR_LANGFUSE_ENABLED=true` + ключей. Temporal и его
+инфраструктура сохранены на будущее — текущий код их не использует.
 
 ## Известные нюансы
 
@@ -96,6 +101,15 @@ Mailtrap присылает входящие письма на `POST /send_test_
 - **Пул asyncpg** — соединения защищены от «протухания» через `pool_pre_ping` + `pool_recycle`
   ([`src/db/session.py`](../src/db/session.py)). Без этого на простаивающих соединениях возможен
   `ConnectionDoesNotExistError` на `BEGIN`.
-- **Чекпоинтер агента** — сейчас `MemorySaver` (в памяти, в [`src/context.py`](../src/context.py));
-  история переписки не переживает рестарт процесса. Для персистентности заменить на
-  `PostgresSaver` (DSN `KKR_LANGGRAPH_DSN` уже предусмотрен в настройках).
+- **Чекпоинтер агента** — `AsyncPostgresSaver` (Postgres, в [`src/context.py`](../src/context.py));
+  история переписки переживает рестарт процесса. Схема чекпоинта (таблицы `checkpoint_*`)
+  применяется в `lifespan` через `setup()` — это **собственные миграции LangGraph**, они не
+  относятся к alembic и не должны попадать в autogenerate. Сборщик (`AsyncPostgresSaver`) и граф
+  строятся в `init_graph()` внутри event-loop uvicorn: конструктор saver'а привязывается к
+  `asyncio.get_running_loop()`, а `build_context()` синхронный и до старта uvicorn лупа ещё нет.
+- **Langfuse (опционально)** — трейсинг LLM. Включается `KKR_LANGFUSE_ENABLED=true` + обоими
+  ключами (`KKR_LANGFUSE_PUBLIC_KEY`/`KKR_LANGFUSE_SECRET_KEY`, берутся из `LANGFUSE_INIT_PROJECT_*`
+  в compose). Один агент-оборот = один трейс; `session_id` = per-client thread (вся переписка гостя
+  группируется в сессию), `user_id` = id клиента. Callback навешивается в
+  [`src/agent/stream.py`](../src/agent/stream.py) через `RunnableConfig`; client/saver/flush —
+  в [`src/agent/tracing.py`](../src/agent/tracing.py). Без включения — no-op.
