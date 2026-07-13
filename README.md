@@ -1,25 +1,64 @@
 # kkr-hotel-assist
 
-Email-based hotel concierge agent. After a client books a hotel, this service negotiates with the
-hotel on the client's behalf — early check-in, room upgrade conditions, and free-text wishes — by
-corresponding with the hotel over email, durably orchestrated, and returns a final report to the
-client.
+**Отель-консьерж** — Telegram-бот с LLM-агентом, который помогает гостю общаться с отелем по email.
+Гость пересылает боту подтверждение бронирования и описывает свои пожелания (ранний заезд,
+апгрейд номера, трансфер, вопросы по услугам). Агент самостоятельно разбирает бронь, при
+необходимости ищет контактный email отеля, составляет письмо на нужном языке, отправляет его
+через Mailtrap и ведёт переписку с отелем — вовлекая гостя только тогда, когда без его ответа
+обойтись нельзя.
 
-See `openspec/` for the full specification (proposal, design, specs, tasks).
+## Как это работает (кратко)
 
-## Architecture
+1. Гость пишет боту в Telegram. При первом запуске (`/start`) для него автоматически
+   создаётся личный **inbound-ящик** Mailtrap — на него гость пересылает подтверждение брони.
+2. Любое текстовое сообщение гостя уходит в **агента** (LangGraph ReAct) — один агент ведёт
+   весь сценарий: уточнить детали, найти email отеля, составить и отправить письмо.
+3. Письмо отелю уходит через Mailtrap. Запись о нём сохраняется, чтобы позже сопоставить ответ
+   отеля по заголовку `In-Reply-To`.
+4. Когда отель отвечает, входящий webhook Mailtrap маршрутирует письмо обратно в агента
+   (как ход `hotel reply:`) — и тот автономно продолжает переписку, информируя гостя.
 
-Clean Architecture on a Temporal + LangGraph + FastAPI + PostgreSQL stack.
+Подробно — в [docs/architecture.md](docs/architecture.md).
 
-- `src/domain` — pure business logic, entities, value objects, domain events, ports. Depends on nothing.
-- `src/infrastructure` — Postgres persistence, Mailgun adapters, LangGraph agents, Temporal workflows/activities, config.
-- `src/presentation` — FastAPI endpoints (webhooks, client API).
+## Архитектура
 
-## Development
+Единый пакет [`src/`](src/), всё на async (FastAPI + aiogram + LangGraph + SQLAlchemy/asyncpg).
+
+| Слой | Назначение |
+|------|-----------|
+| [`src/bot`](src/bot) | Telegram-бот (aiogram): приём сообщений, маршрутизация в агента |
+| [`src/agent`](src/agent) | LLM-агент (LangGraph `create_agent`): state, tools, middleware, стриминг ответов |
+| [`src/app`](src/app) | FastAPI-приложение: webhook Mailtrap, зависимости, lifespan |
+| [`src/db`](src/db) | SQLAlchemy-модели и репозитории (клиенты, пересланные письма, отправленные письма) |
+| [`src/integrations/mailtrap`](src/integrations/mailtrap) | Mailtrap-клиент (отправка + inbound) и vendored OpenAPI-клиенты |
+| [`src/config.py`](src/config.py) · [`src/logging.py`](src/logging.py) · [`src/llm.py`](src/llm.py) | настройки (pydantic-settings), structlog-логирование, сборка chat-модели |
+
+Точка входа — [`main.py`](main.py): строит контекст приложения, собирает FastAPI-приложение,
+запускает uvicorn (в lifespan поднимается polling бота).
+
+## Документация
+
+- [docs/architecture.md](docs/architecture.md) — компоненты, потоки данных, ключевая механика
+  (сериализуемый контекст, threading писем, подстановка `$user_inbox`, markdown→entities).
+- [docs/agent.md](docs/agent.md) — агент: роль, инструменты, промпты, поведение, языковая политика.
+- [docs/development.md](docs/development.md) — локальная разработка: установка, переменные
+  окружения, запуск, миграции, lint/типы.
+- [docs/ops.md](docs/ops.md) — эксплуатация: логирование, Mailtrap (webhook, домены, подпись),
+  Alembic, известные нюансы.
+
+## Быстрый старт
 
 ```bash
-uv sync --extra dev          # install deps
-uv run pytest                # tests
-uv run ruff check            # lint
-uv run ty check              # types
+uv sync --extra dev                       # установить зависимости
+cp .env.example .env                      # заполнить KKR_* (токен бота, Mailtrap, DSN, ...)
+docker compose up -d postgres             # поднять зависимости (см. docs/development.md)
+uv run alembic upgrade head               # применить схему БД
+uv run python main.py                     # запуск приложения (FastAPI + бот)
 ```
+
+Полный список переменных и нюансы настройки — в [docs/development.md](docs/development.md).
+
+## Стек
+
+Python 3.12 · FastAPI · aiogram 3 · LangGraph / LangChain · SQLAlchemy 2 (asyncpg) · Alembic ·
+Mailtrap (отправка + inbound webhooks) · Tavily (веб-поиск) · structlog · pydantic-settings.

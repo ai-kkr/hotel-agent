@@ -3,7 +3,7 @@
 # provider in local mode). Start with:  docker compose up
 # Tear down (incl. data volumes):  docker compose down -v
 #
-# Service ports mirror the defaults in infrastructure/config.Settings:
+# Service ports mirror the defaults in src.config.Settings:
 #   - Temporal:  localhost:7233   (KKR_TEMPORAL_TARGET)
 #   - Temporal UI: localhost:8080
 #   - Postgres:  localhost:5432   (KKR_POSTGRES_DSN / KKR_LANGGRAPH_DSN)
@@ -179,7 +179,9 @@ services:
       start_period: 1s
 
   minio:
-    image: cgr.dev/chainguard/minio
+    # Official MinIO image. (Previously cgr.dev/chainguard/minio, which is gated
+    # behind docker login and returns "pull access denied" without auth.)
+    image: docker.io/minio/minio
     restart: always
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'

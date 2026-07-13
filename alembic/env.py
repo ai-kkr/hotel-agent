@@ -1,10 +1,9 @@
 """Alembic environment.
 
 Runs migrations against the async Postgres DSN from :class:`Settings`. The metadata target is
-``src_v2.db.base.Base.metadata`` (importing ``src_v2.db.models`` registers models). The legacy
-``src/infrastructure`` layout still owns config (``get_settings``) until that layer is migrated.
+``src.db.base.Base.metadata`` (importing ``src.db.models`` registers models).
 
-Only tables present in the v2 metadata are managed: objects that exist in the DB but are absent
+Only tables present in the metadata are managed: objects that exist in the DB but are absent
 from the target metadata (legacy v1 tables like ``bookings``/``messages``) are ignored rather
 than dropped, so autogenerate never emits destructive drops for unmanaged tables.
 """
@@ -21,15 +20,15 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-# Repo root is not on sys.path by default (alembic.ini only prepends ``src``); add it so the
-# ``src_v2`` package is importable alongside ``infrastructure``.
+# Repo root is not on sys.path by default (alembic.ini prepends ``.``); add it so the ``src``
+# package is importable.
 _REPO_ROOT = str(Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import src_v2.db.models  # noqa: F401  (registers all ORM models on Base)
-from infrastructure.config import get_settings
-from src_v2.db.base import Base
+import src.db.models  # noqa: E402,F401  (registers all ORM models on Base)
+from src.config import get_settings  # noqa: E402
+from src.db.base import Base  # noqa: E402
 
 config = context.config
 

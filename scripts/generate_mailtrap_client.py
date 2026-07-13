@@ -25,7 +25,7 @@ Usage
     uv run python scripts/generate_mailtrap_client.py sync         # only refresh vendored specs
     uv run python scripts/generate_mailtrap_client.py generate     # only regenerate from vendored specs
     uv run python scripts/generate_mailtrap_client.py generate inbound
-    uv run python scripts/generate_mailtrap_client.py --target src_v2/integrations/mailtrap
+    uv run python scripts/generate_mailtrap_client.py --target src/integrations/mailtrap
 
 Requires the ``openapi-python-client`` dev dependency (already in ``[project.optional-dependencies]
 dev``); run ``uv sync --extra dev`` if it is missing.
@@ -44,7 +44,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 VENDOR_DIR = REPO / "scripts" / "_vendor" / "mailtrap-openapi"
-DEFAULT_TARGET = REPO / "src_v2" / "integrations" / "mailtrap"
+DEFAULT_TARGET = REPO / "src" / "integrations" / "mailtrap"
 
 # Raw URLs on GitHub default branch. Pinned to a commit/tag? Not yet — bump ``SPEC_REF`` to a
 # specific git ref (branch, tag, or sha) for reproducible generation.

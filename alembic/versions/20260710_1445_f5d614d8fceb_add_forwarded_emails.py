@@ -7,19 +7,17 @@ Create Date: 2026-07-10 14:45:15.583346+00:00
 
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
-import src_v2.db.types
-
+import src.db.types
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'f5d614d8fceb'
-down_revision: Union[str, None] = '2c284d7b10f3'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = '2c284d7b10f3'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -28,7 +26,7 @@ def upgrade() -> None:
     sa.Column('id', sa.String(length=64), nullable=False),
     sa.Column('message_id', sa.String(length=320), nullable=False),
     sa.Column('client_id', sa.Integer(), nullable=False),
-    sa.Column('data', src_v2.db.types.MessageDetailsType(), nullable=False),
+    sa.Column('data', src.db.types.MessageDetailsType(), nullable=False),
     sa.ForeignKeyConstraint(['client_id'], ['clients.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )

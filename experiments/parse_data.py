@@ -4,8 +4,8 @@ from pprint import pprint
 from langchain_core.utils.uuid import uuid7
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from src_v2.agent.nodes.email_extractor import get_email_graph
-from src_v2.agent.types import AgentContext
+from src.agent.nodes.email_extractor import get_email_graph
+from src.agent.types import AgentContext
 from tavily import TavilyClient
 
 from infrastructure.config import get_settings
