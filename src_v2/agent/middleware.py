@@ -12,7 +12,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
 from infrastructure.logging import get_logger
-from src_v2.agent.exceptions import SelfCorrectionError
+
+from .exceptions import SelfCorrectionError
 
 __all__ = ["SelfCorrectionMiddleware"]
 

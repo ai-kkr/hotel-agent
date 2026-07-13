@@ -10,10 +10,11 @@ from telegramify_markdown import convert, split_entities
 
 from infrastructure.config import get_settings
 from infrastructure.logging import get_logger
-from src_v2.agent.nodes.hotel_conversation import EmailContext
-from src_v2.agent.types import MessageText
 from src_v2.context import get_context
 from src_v2.db.models import ClientORM
+
+from .context import EmailContext
+from .types import MessageText
 
 log = get_logger(__name__)
 
@@ -63,9 +64,7 @@ async def stream_graph(
     interrupted = any(task.interrupts for task in state.tasks)
     inp = Command(resume=msg) if interrupted else {"messages": [HumanMessage(content=msg)]}
 
-    typing_stop = asyncio.Event()
-    typing_task = asyncio.create_task(_keep_typing(bot, chat_id, typing_stop))
-    try:
+    async with _typing(bot, chat_id):
         # message_id -> accumulated text so far; each distinct AIMessage becomes one chat message.
         acc: dict[str, str] = {}
         current_id: str | None = None
@@ -97,9 +96,6 @@ async def stream_graph(
 
         if current_id is not None:
             await _flush(bot, chat_id, acc, current_id, inbox=inbox)
-    finally:
-        typing_stop.set()
-        await typing_task
 
 
 async def _send_text(bot, chat_id: int, text: str, *, inbox: str = "") -> None:
@@ -131,6 +127,19 @@ async def _send_text(bot, chat_id: int, text: str, *, inbox: str = "") -> None:
     except Exception as e:  # last-resort delivery as plain text
         log.warning("send.formatted_failed", error=str(e))
         await bot.send_message(chat_id=chat_id, text=text)
+
+
+@contextlib.asynccontextmanager
+async def _typing(bot, chat_id: int):
+    """Keep the chat's "typing…" indicator alive for the duration of the ``async with`` block."""
+    stop = asyncio.Event()
+    task = asyncio.create_task(_keep_typing(bot, chat_id, stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def _keep_typing(bot, chat_id: int, stop: asyncio.Event) -> None:

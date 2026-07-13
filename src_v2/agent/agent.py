@@ -9,13 +9,11 @@ from langchain.agents import create_agent
 from langchain.chat_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from src_v2.agent.prompts import SYSTEM_HOTEL_CONVERSATION
-from src_v2.agent.tools import search_tools
-
 from .context import EmailContext
 from .middleware import SelfCorrectionMiddleware
+from .prompts import SYSTEM_MAIN
 from .state import EmailState
-from .tools import tools as hotel_conversation_tools
+from .tools import tools
 
 __all__ = ["build_email_agent"]
 
@@ -26,12 +24,9 @@ def build_email_agent(model: BaseChatModel, checkpointer: BaseCheckpointSaver):
 
     return create_agent(
         model=model,
-        tools=[
-            *hotel_conversation_tools,
-            *search_tools,
-        ],
+        tools=tools,
         middleware=[SelfCorrectionMiddleware()],
-        system_prompt=SYSTEM_HOTEL_CONVERSATION,
+        system_prompt=SYSTEM_MAIN,
         state_schema=EmailState,
         context_schema=EmailContext,
         checkpointer=checkpointer,

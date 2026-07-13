@@ -6,8 +6,9 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 
 from infrastructure.logging import get_logger
-from src_v2.agent.state import AgentState
-from src_v2.agent.types import AgentContext
+
+from ..context import EmailContext
+from ..state import EmailState
 
 __all__ = ["search_tools"]
 
@@ -17,7 +18,7 @@ log = get_logger(__name__)
 @tool
 async def search_internet(
     query: str,
-    runtime: ToolRuntime[AgentContext, AgentState],
+    runtime: ToolRuntime[EmailContext, EmailState],
 ):
     """Search the web for the given query to find information about a hotel.
 
@@ -50,7 +51,7 @@ async def search_internet(
 @tool
 async def extract_web_page(
     url: str,
-    runtime: ToolRuntime[AgentContext, AgentState],
+    runtime: ToolRuntime[EmailContext, EmailState],
 ):
     """Fetch and extract the readable text content of a web page at the given URL.
 

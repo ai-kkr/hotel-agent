@@ -14,7 +14,7 @@ from tavily.tavily import TavilyClient
 from infrastructure.agents.models import build_model
 from infrastructure.config import get_settings
 from infrastructure.db.session import create_engine, session_factory
-from src_v2.agent.nodes.hotel_conversation import build_email_agent
+from src_v2.agent import build_email_agent
 from src_v2.integrations.mailtrap.client import MailtrapClient
 from src_v2.integrations.mailtrap.mailtrap_inbound import AuthenticatedClient
 
