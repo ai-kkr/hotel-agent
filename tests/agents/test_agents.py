@@ -84,6 +84,21 @@ class TestConfirmationExtractor:
         assert "booking_ref" in eb.missing_required
         assert eb.is_confident is False
 
+    async def test_junk_hotel_email_treated_as_missing(self) -> None:
+        # Models sometimes emit sentinel strings ("null"/"N/A"/"-") for an absent email. That must
+        # surface as "email not found" (None), not raise and fail the extract activity.
+        schema = ExtractedBookingSchema(
+            hotel_name="Grand",
+            hotel_email="null",
+            booking_ref="R1",
+            check_in="2026-02-01",
+            check_out="2026-02-04",
+            confidence=0.9,
+        )
+        agent = ConfirmationExtractorAgent(FakeChatModel().with_structured(schema), confidence_threshold=0.7)
+        eb = await agent.extract(_forward())
+        assert eb.hotel_email is None
+
 
 # --------------------------------------------------------------------------- discoverer
 

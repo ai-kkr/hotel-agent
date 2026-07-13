@@ -1,138 +1,84 @@
-"""Telegram adapter (spec: telegram-surface; design D4, D7).
+"""Telegram adapter (spec: telegram-surface; design D4, D6, D7).
 
 The concrete channel adapter for the surface-agnostic agent. Responsibilities (spec
 telegram-surface):
 
 (a) receive chat messages and forward them to the surface agent thread keyed by the client's
     ``ChannelSession`` (chat_id);
-(b) render agent artifacts — ``RequestUserDecision`` → inline keyboard, text → chat message;
+(b) render agent text replies as chat messages (the agent emits no channel-specific UI artifacts);
 (c) implement the outbound progress port for the Telegram channel (a ``ClientNotifier``).
 
-The adapter talks to Telegram through :class:`TelegramBotPort` (an httpx client in production, a
-recording fake in tests) — no real Telegram calls happen in the test suite. Button presses are
-normalized into a follow-up that resumes the agent (the choice is fed back as the client's answer).
+Inbound polling is driven by aiogram (``aiogram.Dispatcher`` + ``Router`` — see :mod:`infrastructure.telegram.routers``);
+the adapter talks to Telegram for **outbound** sends (replies, greeting, progress) through
+:class:`TelegramBotPort` — an ``aiogram.Bot`` wrapper in production (see :mod:`infrastructure.telegram.bot``),
+a recording fake in tests. No real Telegram calls happen in the test suite.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import httpx
-
 from domain.application import MailboxService
 from domain.enums import Channel
-from domain.intents import RequestUserDecision
 from domain.ports import ProgressEvent
 from infrastructure.agents.surface import SurfaceAgent, SurfaceReply
 
 
 class TelegramBotPort(Protocol):
-    """The Telegram Bot API surface the adapter depends on (faked in tests)."""
+    """The Telegram Bot API surface the adapter sends through (faked in tests)."""
 
     async def send_message(
-        self, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None
+        self,
+        chat_id: str,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        *,
+        parse_mode: str | None = None,
     ) -> None: ...
 
-    async def answer_callback_query(self, callback_query_id: str, text: str = "") -> None: ...
-
-    async def get_updates(self, offset: int | None, timeout: int) -> list[dict[str, Any]]: ...
-
-
-class HttpTelegramBot:
-    """Thin Telegram Bot API client over httpx (no extra dependency)."""
-
-    def __init__(self, bot_token: str, client: httpx.AsyncClient | None = None) -> None:
-        self._base = f"https://api.telegram.org/bot{bot_token}"
-        self._client = client
-
-    async def _call(
-        self, method: str, payload: dict[str, Any], *, timeout: float | None = None
-    ) -> dict[str, Any]:
-        """POST a Bot API method; return the parsed JSON body (raises on non-2xx)."""
-        owns = self._client is None
-        client = self._client or httpx.AsyncClient(timeout=30.0)
-        try:
-            resp = await client.post(
-                f"{self._base}/{method}", json=payload, timeout=timeout or 30.0
-            )
-            resp.raise_for_status()
-            return resp.json()
-        finally:
-            if owns:
-                await client.aclose()
-
-    async def send_message(
-        self, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None
-    ) -> None:
-        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
-        await self._call("sendMessage", payload)
-
-    async def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
-        await self._call(
-            "answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text}
-        )
-
-    async def get_updates(self, offset: int | None, timeout: int) -> list[dict[str, Any]]:
-        """Long-poll ``getUpdates``. ``timeout`` is the server long-poll seconds; the HTTP client
-        read timeout is padded so the request outlives the poll."""
-        # Only request the update kinds we handle (keeps the response small).
-        data = await self._call(
-            "getUpdates",
-            {
-                "offset": offset,
-                "timeout": timeout,
-                "allowed_updates": ["message", "callback_query"],
-            },
-            timeout=timeout + 15,
-        )
-        return list(data.get("result") or [])
+    async def send_chat_action(self, chat_id: str, action: str) -> None: ...
 
 
 # --- rendering (adapter-owned; the agent never imports Telegram types) ------------------------
 
 
-def render_inline_keyboard(decision: RequestUserDecision) -> dict[str, Any]:
-    """Render a ``RequestUserDecision`` as a Telegram inline keyboard.
-
-    ``callback_data`` carries the chosen option back on a button press (kept short; the option text
-    is the value). Options are URL-encoded-safe by Telegram's 64-byte limit on callback_data.
-    """
-    buttons = [{"text": opt, "callback_data": _encode_option(opt)} for opt in decision.options]
-    return {"inline_keyboard": [buttons]}
-
-
 def render_reply(reply: SurfaceReply) -> tuple[str, dict[str, Any] | None]:
     """Render a surface reply into (text, optional reply_markup).
 
-    If the reply carries a ``RequestUserDecision``, the markup is its inline keyboard and the text
-    is the decision's question (any agent text is prepended). Other artifacts (e.g. CancelBooking)
-    are not rendered here — they are executed by a service, not shown as UI.
+    The reply text is rendered as a chat message. Artifacts (e.g. ``CancelBooking``) are not rendered
+    here — they are executed by a service, not shown as UI. ``reply_markup`` is always ``None`` now
+    that the surface is free-text only (no inline keyboards).
     """
-    text = reply.text
-    markup: dict[str, Any] | None = None
-    for artifact in reply.artifacts:
-        if isinstance(artifact, RequestUserDecision):
-            markup = render_inline_keyboard(artifact)
-            question = artifact.question
-            text = f"{text}\n\n{question}".strip() if text else question
-    return text, markup
+    return reply.text, None
 
 
-def normalize_callback(data: str) -> str:
-    """Decode a button-press ``callback_data`` back into the chosen option text."""
-    return _decode_option(data)
+@asynccontextmanager
+async def _typing(bot: TelegramBotPort, chat_id: str, *, interval: float = 4.0) -> AsyncIterator[None]:
+    """Emit the "typing" chat action every ``interval`` seconds for the duration of the block.
 
+    Telegram's typing indicator expires after ~5s, so we resend periodically to keep the chat
+    informed while a (potentially long) agent turn runs. Cancelled on block exit.
+    """
 
-def _encode_option(option: str) -> str:
-    # callback_data is opaque to Telegram; store the verbatim option (truncated for the 64-byte cap).
-    return option[:64]
+    async def tick() -> None:
+        while True:
+            try:
+                await bot.send_chat_action(chat_id, "typing")
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
 
-
-def _decode_option(data: str) -> str:
-    return data
+    task = asyncio.create_task(tick())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 @dataclass
@@ -144,27 +90,37 @@ class TelegramAdapter:
     sessions: Any  # ChannelSessionRepository (typed loosely to avoid an import cycle)
     mailbox: MailboxService
     channel: Channel = Channel.TELEGRAM
+    typing_interval: float = 4.0  # seconds between "typing" resends during an agent turn
+
+    async def handle_start(self, chat_id: str) -> None:
+        """Handle ``/start``: resolve/create the mailbox and send a greeting stating capabilities
+        and the client's individual ``c.<token>@`` forward address (spec: start command greeting)."""
+        mailbox_address = await self.mailbox.resolve_or_create(self.channel, chat_id)
+        # HTML formatting (parse_mode="HTML") — Telegram parses <b>/<code>; the address is monospaced.
+        greeting = (
+            "<b>🏨 Hotel concierge assistant</b>\n\n"
+            "I can help you:\n"
+            "• Answer questions about your hotel (menu, services, prices)\n"
+            "• Collect your booking confirmation and negotiate with the hotel on your behalf\n"
+            "• Track your active requests and report back\n\n"
+            "Your personal forward address:\n"
+            f"<code>{mailbox_address}</code>\n\n"
+            "Forward a booking confirmation here (or to the address above), or just tell me your wishes!"
+        )
+        await self.bot.send_message(chat_id, greeting, parse_mode="HTML")
 
     async def handle_inbound(self, chat_id: str, text: str) -> SurfaceReply:
-        """One inbound chat message → a surface-agent turn → rendered + sent to the chat."""
+        """One inbound chat message → a surface-agent turn → rendered + sent to the chat.
+
+        Emits the "typing" indicator for the duration of the agent turn (spec: typing indicator).
+        """
         # Ensure the client/mailbox exists (lazy); the agent thread is keyed by chat_id.
         await self.mailbox.resolve_or_create(self.channel, chat_id)
-        reply = await self.agent.converse(chat_id, text)
+        async with _typing(self.bot, chat_id, interval=self.typing_interval):
+            reply = await self.agent.converse(chat_id, text)
         out_text, markup = render_reply(reply)
         if out_text:
             await self.bot.send_message(chat_id, out_text, reply_markup=markup)
-        return reply
-
-    async def handle_callback(
-        self, chat_id: str, callback_data: str, callback_query_id: str
-    ) -> SurfaceReply:
-        """A button press: normalize the choice and resume the agent with it as the answer."""
-        await self.bot.answer_callback_query(callback_query_id)
-        choice = normalize_callback(callback_data)
-        reply = await self.agent.converse(chat_id, choice)
-        out_text, _markup = render_reply(reply)
-        if out_text:
-            await self.bot.send_message(chat_id, out_text)
         return reply
 
 

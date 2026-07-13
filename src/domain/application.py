@@ -154,9 +154,14 @@ class MailboxService:
 class IntakeService:
     """Handle a forwarded confirmation: authenticate the client, then start the workflow.
 
-    The sender must match the client's registered email (the SPF/DKIM-verified address surfaced by
-    the mail provider). Default topics (early-checkin, room-upgrade) and wish-derived topics are
-    initialized inside the workflow via the extraction activity (spec 7.2, 7.3).
+    Authentication rules (design D5):
+    * For chat-origin clients (no registered email, client.email == c.<token>@<domain>):
+      authenticate by token possession (the recipient address proves ownership).
+    * For email-channel clients (registered email on file): enforce strict sender matching
+      (sender must equal client.email).
+
+    Default topics (early-checkin, room-upgrade) and wish-derived topics are initialized inside
+    the workflow via the extraction activity (spec 7.2, 7.3).
     """
 
     clients: ClientRepository
@@ -166,6 +171,15 @@ class IntakeService:
         client = await self.clients.by_token(event.client_token)
         if client is None:
             raise UnknownClientToken(event.client_token)
+
+        # Capability-auth for chat-origin clients: if the client's email is a mailbox address
+        # (c.<token>@<domain>), authenticate by token possession (skip sender check).
+        if str(client.email).startswith(f"{INTAKE_PREFIX}"):
+            # Chat-origin client: the recipient address (c.<token>@) proves ownership
+            await self.gateway.start_booking(event)
+            return
+
+        # Email-channel client: enforce strict sender matching
         if event.sender_email != client.email:
             raise UnauthorizedSender(
                 f"sender {event.sender_email} does not match registered email {client.email}"

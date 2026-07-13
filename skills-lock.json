@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "aiogram-framework": {
+      "source": "narumiruna/telegram-bot",
+      "sourceType": "github",
+      "skillPath": ".codex/skills/aiogram-framework/SKILL.md",
+      "computedHash": "496006ca2bfd4eb8e4ff481a5a4aa0ea40deff8b4b8fb3d54ece0e4b55bcdfd8"
+    },
     "fastapi": {
       "source": "fastapi/fastapi",
       "sourceType": "github",

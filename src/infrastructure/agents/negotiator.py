@@ -59,8 +59,10 @@ class NegotiationAgentImpl:
         searcher: WebSearcher,
         fetcher: WebFetcher,
         checkpointer: BaseCheckpointSaver,
+        langfuse_callbacks: list | None = None,
     ) -> None:
         self._tools = build_tools(searcher, fetcher)
+        self._langfuse_callbacks = langfuse_callbacks or []
         self._agent = create_agent(
             model=model,
             tools=self._tools,
@@ -82,7 +84,12 @@ class NegotiationAgentImpl:
                     }
                 ]
             },
-            config={**thread_config(booking_id), "recursion_limit": 10},
+            config={
+                **thread_config(booking_id),
+                "recursion_limit": 10,
+                "callbacks": self._langfuse_callbacks,
+                "metadata": {"langfuse_session_id": str(booking_id)},
+            },
         )
         schema = _coerce(result.get("structured_response"))
         if schema is None:

@@ -50,7 +50,7 @@ class ConfirmationExtractorAgent:
 
 
 def _to_domain(schema: ExtractedBookingSchema, threshold: float) -> ExtractedBooking:
-    hotel_email = (schema.hotel_email or "").strip() or None
+    hotel_email = schema.hotel_email  # already EmailStr-validated (or None) by the schema
     return ExtractedBooking(
         hotel_name=(schema.hotel_name or "").strip() or "unknown",
         confidence=schema.confidence,

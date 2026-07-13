@@ -10,6 +10,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
+from langgraph.errors import GraphRecursionError
 
 from domain.ids import EmailAddress
 from domain.intents import SearchDone
@@ -26,8 +27,15 @@ contact email, set `found` to false and leave `email` null. When unsure of the l
 class ContactDiscovererAgent:
     """Implements :class:`domain.ports.ContactDiscoverer`."""
 
-    def __init__(self, model: BaseChatModel, searcher: WebSearcher, fetcher: WebFetcher) -> None:
+    def __init__(
+        self,
+        model: BaseChatModel,
+        searcher: WebSearcher,
+        fetcher: WebFetcher,
+        langfuse_callbacks: list | None = None,
+    ) -> None:
         self._tools = build_tools(searcher, fetcher)
+        self._langfuse_callbacks = langfuse_callbacks or []
         self._agent = create_agent(
             model=model,
             tools=self._tools,
@@ -37,16 +45,26 @@ class ContactDiscovererAgent:
 
     async def discover(self, hotel_name: str, hint_website: str | None) -> SearchDone:
         hint = f" Known website: {hint_website}." if hint_website else ""
-        result = await self._agent.ainvoke(
-            {
-                "messages": [
-                    {"role": "user", "content": f"Hotel: {hotel_name}.{hint} Find its contact email and language."}
-                ]
-            },
-            config={"recursion_limit": 8},
-        )
+        try:
+            result = await self._agent.ainvoke(
+                {
+                    "messages": [
+                        {"role": "user", "content": f"Hotel: {hotel_name}.{hint} Find its contact email and language."}
+                    ]
+                },
+                config={
+                    "recursion_limit": 8,
+                    "callbacks": self._langfuse_callbacks,
+                    "metadata": {"langfuse_session_id": hotel_name},
+                },
+            )
+        except GraphRecursionError:
+            # The ReAct loop ran out of steps without converging (e.g. a stub/empty web searcher
+            # keeps the agent searching forever). Treat as "contact not found" — discovery failure
+            # is a normal outcome (the booking goes cant_progress), not an activity crash.
+            return SearchDone(hotel_name=hotel_name, language="en", website=hint_website, found=False)
         schema = _coerce(result.get("structured_response"))
-        email = (schema.email or "").strip()
+        email = schema.email  # already EmailStr-validated (or None) by the schema
         language = (schema.language or "en").strip().lower()[:2] or "en"
         return SearchDone(
             hotel_name=hotel_name,

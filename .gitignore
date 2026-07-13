@@ -31,3 +31,4 @@ corpus_output/
 # OS
 .DS_Store
 Thumbs.db
+privatekey.pem

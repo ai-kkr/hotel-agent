@@ -1,22 +1,35 @@
 """Alembic environment.
 
 Runs migrations against the async Postgres DSN from :class:`Settings`. The metadata target is
-``infrastructure.db.base.Base.metadata`` (importing ``infrastructure.db.models`` registers models).
+``src_v2.db.base.Base.metadata`` (importing ``src_v2.db.models`` registers models). The legacy
+``src/infrastructure`` layout still owns config (``get_settings``) until that layer is migrated.
+
+Only tables present in the v2 metadata are managed: objects that exist in the DB but are absent
+from the target metadata (legacy v1 tables like ``bookings``/``messages``) are ignored rather
+than dropped, so autogenerate never emits destructive drops for unmanaged tables.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-import infrastructure.db.models  # noqa: F401  (registers all ORM models on Base)
+# Repo root is not on sys.path by default (alembic.ini only prepends ``src``); add it so the
+# ``src_v2`` package is importable alongside ``infrastructure``.
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+import src_v2.db.models  # noqa: F401  (registers all ORM models on Base)
 from infrastructure.config import get_settings
-from infrastructure.db.base import Base
+from src_v2.db.base import Base
 
 config = context.config
 
@@ -30,19 +43,35 @@ def _resolve_url() -> str:
     return get_settings().postgres_dsn
 
 
+def _include_object(object_, name, type_, reflected, compare_to):
+    """Manage only objects described by the v2 metadata.
+
+    A reflected object with no counterpart in the metadata (``compare_to is None``) is a legacy
+    v1 object we no longer model — leave it untouched instead of generating a drop.
+    """
+    if reflected and compare_to is None:
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=_resolve_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=_include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=_include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

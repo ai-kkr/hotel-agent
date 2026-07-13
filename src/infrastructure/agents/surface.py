@@ -2,8 +2,7 @@
 
 A LangGraph ``create_agent`` ReAct agent that holds a live, multi-turn dialogue with a client over
 an arbitrary surface. It is **surface-agnostic**: it imports no channel types (no Telegram) and
-emits only artifacts (``RequestUserDecision`` / ``CancelBooking``) plus text. A channel adapter
-renders the artifacts.
+emits only artifacts (``CancelBooking``) plus text. A channel adapter renders the artifacts.
 
 The agent owns dialogue + UX orchestration only. Mutating tools (``delete_task``, ``ask_user``)
 emit intents/artifacts that a service executes — the agent performs no side-effects (no workflow
@@ -18,6 +17,7 @@ Per-chat context lives on the checkpointer (``thread_id = chat_id``): ``InMemory
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain.agents import create_agent
@@ -30,7 +30,7 @@ from domain.entities import Booking
 from domain.enums import BookingLifecycle, Channel
 from domain.events import ChatForward
 from domain.ids import ClientToken
-from domain.intents import CancelBooking, RequestUserDecision, SurfaceArtifact
+from domain.intents import CancelBooking, SurfaceArtifact
 from domain.ports import BookingRepository, ChannelSessionRepository
 from infrastructure.agents.tools import WebFetcher, WebSearcher, build_tools
 from infrastructure.db.langgraph import thread_config
@@ -40,15 +40,21 @@ their hotel — nothing else.
 
 What you can do:
 - Answer general questions about the hotel (menu, services, prices) using web_search / fetch_url.
-- Collect a booking: if the guest forwards/pastes a booking confirmation, acknowledge it and rely on \
-the system to extract and start negotiating with the hotel. Capture any wishes they mention.
+- Collect a booking: when the guest shares or pastes a booking confirmation, call forward_confirmation \
+with the full confirmation text verbatim (and any wishes they mention). Do not paraphrase, summarize, \
+or shorten the confirmation — pass it through unchanged so the system can extract details. Only after \
+the tool returns success, tell the guest it's underway.
 - Summarize the guest's active requests via list_tasks.
 - Cancel a request via delete_task (you never cancel silently — confirm what will happen).
-- Ask a multiple-choice question via ask_user when you need the guest to pick an option.
+- Ask the guest a question via ask_user when you need to confirm their intent. Present the question with \
+suggested options as hints — the guest can reply in natural language and select one or more options.
 
-Process you follow for a new booking: collect the booking → confirm intent (ask_user with options \
-like early check-in, higher floor, late check-out) → the system negotiates with the hotel → report \
-back. Keep replies short and friendly.
+Process you follow for a new booking: collect the booking (forward_confirmation) → confirm intent \
+(ask_user presenting hints like early check-in, higher floor, late check-out — the guest can reply \
+freely) → the system negotiates with the hotel → report back. Keep replies short and friendly.
+
+CRITICAL: you have no way to start a booking other than the forward_confirmation tool. Never tell the \
+guest you have forwarded/sent/started something unless forward_confirmation just returned success.
 
 After the first message has been sent to the hotel, proactively offer to look up open-source \
 information about that hotel (restaurant menu, extra services and prices) using web_search/fetch_url.
@@ -80,6 +86,7 @@ class SurfaceComponents:
     searcher: WebSearcher
     fetcher: WebFetcher
     checkpointer: BaseCheckpointSaver
+    langfuse_callbacks: list = field(default_factory=list)
 
 
 @dataclass
@@ -116,9 +123,11 @@ class SurfaceAgent:
         fetcher: WebFetcher,
         checkpointer: BaseCheckpointSaver,
         deps: SurfaceDeps,
+        langfuse_callbacks: list | None = None,
     ) -> None:
         self._deps = deps
         self._ctx = _TurnContext()
+        self._langfuse_callbacks = langfuse_callbacks or []
         self._agent = create_agent(
             model=model,
             tools=self._build_tools(searcher, fetcher),
@@ -138,7 +147,12 @@ class SurfaceAgent:
         self._ctx.artifacts = []
         result = await self._agent.ainvoke(
             {"messages": [{"role": "user", "content": user_text}]},
-            config={**thread_config(chat_id), "recursion_limit": 12},
+            config={
+                **thread_config(chat_id),
+                "recursion_limit": 12,
+                "callbacks": self._langfuse_callbacks,
+                "metadata": {"langfuse_session_id": chat_id},
+            },
         )
         token = await self._deps.sessions.client_for(self._deps.channel, chat_id)
         return SurfaceReply(text=_last_text(result), artifacts=list(self._ctx.artifacts), client_token=token)
@@ -208,14 +222,51 @@ class SurfaceAgent:
             return f"Noted — I'll ask the system to cancel booking {booking_id}."
 
         async def ask_user(question: str, options: list[str]) -> str:
-            """Ask the guest a multiple-choice question.
+            """Ask the guest a multiple-choice question as free-text hints.
+
+            The guest can reply in natural language and select one or more options.
+            The agent (LLM) will interpret their reply.
 
             Args:
                 question: The question to ask.
                 options: The distinct choices the guest can pick (2-6 recommended).
             """
-            ctx.artifacts.append(RequestUserDecision(question=question, options=list(options)))
-            return f"Asked the guest: {question}"
+            hints = ", ".join(options)
+            return f"{question}\n\nOptions: {hints}"
+
+        async def forward_confirmation(payload: str, wishes: str = "") -> str:
+            """Hand a booking confirmation the guest shared to the concierge intake.
+
+            Call this as soon as the guest pastes/forwards a booking confirmation. Pass the
+            confirmation through verbatim — the system extracts hotel, dates, and booking details;
+            it then starts the negotiation workflow. This is the ONLY way to start a booking.
+
+            Args:
+                payload: The booking confirmation text, verbatim (do not summarize or shorten).
+                wishes: Any wishes the guest mentioned (early check-in, higher floor, etc.), if any.
+            """
+            chat_id = _require_chat(ctx)
+            outcome = await deps.intake.handle(
+                ChatForward(
+                    client_token="",  # resolved from the session inside the service
+                    chat_id=chat_id,
+                    cover_text=wishes,
+                    forwarded_payload=payload,
+                    received_at=datetime.now(tz=UTC),
+                    channel=deps.channel,
+                )
+            )
+            if outcome.started:
+                return (
+                    "Booking accepted. The system is extracting the details and will start negotiating "
+                    "with the hotel; report back to the guest shortly."
+                )
+            # Unreachable in the normal Telegram flow: the adapter resolves the mailbox before the
+            # agent turn, so a session always exists. Treat as an unexpected state, not a setup gap.
+            return (
+                "The system could not start this booking right now due to an unexpected account state. "
+                "Tell the guest something went wrong on our side and to send the confirmation again."
+            )
 
         tools = build_tools(searcher, fetcher)  # web_search + fetch_url (read-only, reused)
         tools += [
@@ -223,6 +274,7 @@ class SurfaceAgent:
             StructuredTool.from_function(coroutine=list_tasks, name="list_tasks"),
             StructuredTool.from_function(coroutine=delete_task, name="delete_task"),
             StructuredTool.from_function(coroutine=ask_user, name="ask_user"),
+            StructuredTool.from_function(coroutine=forward_confirmation, name="forward_confirmation"),
         ]
         return tools
 

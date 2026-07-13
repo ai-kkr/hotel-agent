@@ -13,16 +13,22 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.29",
     "temporalio>=1.7",
-    "langgraph>=0.2",
+    "langgraph>=1",
     "langgraph-checkpoint-postgres>=2.0",
-    "langchain>=0.3",
-    "langchain-openai>=0.2",
+    "langchain>=1",
+    "langchain-openai>=1.3.3",
+    "langfuse>=3.0",
     "psycopg[binary]>=3.2",
-    "pydantic>=2.7",
+    "pydantic[email]>=2.7",
     "pydantic-settings>=2.3",
     "httpx>=0.27",
+    "aiogram>=0.3",
     "structlog>=24.1",
     "html2text>=2025.4.15",
+    "jinja2>=3.1.6",
+    "tavily-python>=0.7.26",
+    "mailtrap>=2.6.1",
+    "telegramify-markdown>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +41,7 @@ dev = [
     "respx>=0.21",
     "aiosqlite>=0.20",
     "ezgmail>=2026.4.28",
+    "openapi-python-client>=0.29",
 ]
 
 [build-system]

@@ -66,3 +66,23 @@ class TestIntake:
         with pytest.raises(UnknownClientToken):
             await intake.handle(_forward("nope", "x@y.com"))
         assert gateway.started == []
+
+    async def test_chat_origin_accepted_by_token_possession(self, setup: tuple) -> None:
+        # A chat-origin client has no registered email — their email IS the c.<token>@ mailbox.
+        # A forward to that address is authenticated by token possession (capability), not sender match.
+        intake, gateway, clients = setup
+        await clients.add(Client(token="tok", email=EmailAddress("c.tok@kkr-hotel.com")))
+        # Sender does NOT match the mailbox address — yet intake succeeds by capability.
+        await intake.handle(_forward("tok", "whoever@forwarder.com"))
+        assert len(gateway.started) == 1
+
+    async def test_email_channel_still_sender_checked_when_chat_origin_present(
+        self, setup: tuple
+    ) -> None:
+        # Email-channel clients (a real registered email) keep strict sender matching even though
+        # chat-origin capability auth exists for c.<token>@ addresses.
+        intake, gateway, clients = setup
+        await clients.add(Client(token="tok", email=EmailAddress("client@example.com")))
+        with pytest.raises(UnauthorizedSender):
+            await intake.handle(_forward("tok", "attacker@evil.com"))
+        assert gateway.started == []

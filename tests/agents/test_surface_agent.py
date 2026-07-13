@@ -9,7 +9,7 @@ from domain.application import ChatIntakeService, MailboxService
 from domain.entities import Booking, HotelContact
 from domain.enums import Channel
 from domain.ids import EmailAddress
-from domain.intents import CancelBooking, RequestUserDecision
+from domain.intents import CancelBooking
 from infrastructure.agents.surface import SurfaceAgent, SurfaceDeps
 from infrastructure.agents.tools import FakeWebFetcher, FakeWebSearcher
 from infrastructure.persistence.in_memory import (
@@ -47,6 +47,14 @@ class _NullGateway:
     async def signal_delivery_failure(self, *args: object) -> None: ...
 
 
+class _RecordingGateway(_NullGateway):
+    def __init__(self) -> None:
+        self.started: list[object] = []
+
+    async def start_booking(self, event: object) -> None:
+        self.started.append(event)
+
+
 def _agent(model: FakeChatModel, deps: SurfaceDeps) -> SurfaceAgent:
     return SurfaceAgent(
         model=model,
@@ -77,17 +85,19 @@ class TestSurfaceAgent:
         booking = await bookings.get("b1")
         assert booking is not None and not booking.is_cancelled
 
-    async def test_ask_user_emits_request_user_decision(self) -> None:
+    async def test_ask_user_presents_free_text_hints_no_artifact(self) -> None:
+        # ask_user no longer emits a RequestUserDecision artifact; it returns free-text hints that
+        # the agent folds into its reply. The guest may then answer freely (incl. multi-select).
         deps, _s, _b, _c = await _deps()
         model = FakeChatModel().with_response(
             tool_call("ask_user", {"question": "Early check-in?", "options": ["Yes", "No"]})
-        ).with_response(AIMessage(content="Pick one."))
+        ).with_response(AIMessage(content="Early check-in? Options: Yes, No"))
         agent = _agent(model, deps)
         reply = await agent.converse("chat:1", "what can you do")
-        decisions = [a for a in reply.artifacts if isinstance(a, RequestUserDecision)]
-        assert len(decisions) == 1
-        assert decisions[0].question == "Early check-in?"
-        assert decisions[0].options == ["Yes", "No"]
+        # No structured-decision artifact is emitted (free-text surface).
+        assert not any(isinstance(a, CancelBooking) for a in reply.artifacts)
+        # The agent surfaces the options as hints in its text reply.
+        assert "Yes" in reply.text and "No" in reply.text
 
     async def test_intake_delegates_to_core(self) -> None:
         deps, _s, _b, _c = await _deps()
@@ -115,6 +125,34 @@ class TestSurfaceAgent:
         reply = await agent.converse("chat:1", "what time is the gym open?")
         assert reply.text == "The gym is open 6am-10pm."
         assert reply.artifacts == []
+
+    async def test_forward_confirmation_calls_intake_start(self) -> None:
+        # forward_confirmation is the only path a chat booking reaches the core intake → workflow.
+        # Without it the agent can only hallucinate "sent"; this pins that the tool really starts intake.
+        clients = InMemoryClientRepository()
+        sessions = InMemoryChannelSessionRepository()
+        mailbox = MailboxService(
+            clients=clients, sessions=sessions, mail_domain="kkr-hotel.com", token_factory=lambda: "tok"
+        )
+        await mailbox.resolve_or_create(Channel.TELEGRAM, "chat:1")
+        gateway = _RecordingGateway()
+        intake = ChatIntakeService(sessions=sessions, clients=clients, gateway=gateway)
+        deps = SurfaceDeps(
+            mailbox=mailbox, sessions=sessions, bookings=InMemoryBookingRepository(), intake=intake
+        )
+        model = (
+            FakeChatModel()
+            .with_response(
+                tool_call(
+                    "forward_confirmation",
+                    {"payload": "Booking ref ABC, Dobedan, 29.04.2025", "wishes": "early check-in"},
+                )
+            )
+            .with_response(AIMessage(content="Sent to the concierge."))
+        )
+        agent = _agent(model, deps)
+        await agent.converse("chat:1", "here is my booking: Booking ref ABC, Dobedan")
+        assert len(gateway.started) == 1
 
 
 class TestNoTelegramImports:

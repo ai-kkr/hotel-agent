@@ -77,27 +77,7 @@ class SearchDone:
 #
 # These are emitted by the surface agent (the live chat brain), not the per-booking negotiation
 # agent. They are surface-agnostic: the agent never references a specific channel; a channel
-# adapter renders them (e.g. RequestUserDecision → Telegram inline keyboard).
-
-
-@dataclass(frozen=True)
-class RequestUserDecision:
-    """Ask the client a multiple-choice question (design D4).
-
-    Rendered by the active channel adapter (e.g. inline keyboard on Telegram). A choice is
-    normalized back into a :class:`domain.events.ClientMessage` carrying the selected option.
-    """
-
-    question: str
-    options: list[str]
-
-    def __post_init__(self) -> None:
-        if not self.question.strip():
-            raise ValueError("question must not be empty")
-        if not self.options:
-            raise ValueError("options must not be empty")
-        if any(not opt.strip() for opt in self.options):
-            raise ValueError("options must not contain empty strings")
+# adapter renders them.
 
 
 @dataclass(frozen=True)
@@ -119,7 +99,7 @@ class CancelBooking:
 AgentIntent = SendEmail | NeedMoreInfo | Resolved | SearchDone
 
 
-SurfaceArtifact = RequestUserDecision | CancelBooking
+SurfaceArtifact = CancelBooking
 
 
 # --- Triggers: what kicks a negotiation turn ----------------------------------------

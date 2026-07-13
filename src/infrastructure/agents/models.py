@@ -12,7 +12,10 @@ from langchain_core.language_models import BaseChatModel
 from infrastructure.config import Settings
 
 
-def build_model(settings: Settings) -> BaseChatModel:
+def build_model(
+    settings: Settings,
+    model_override: str | None = None,
+) -> BaseChatModel:
     """Build the chat model from settings.
 
     ``llm_model`` is a fully-qualified ``"<provider>:<model>"`` string or a bare model name
@@ -38,7 +41,7 @@ def build_model(settings: Settings) -> BaseChatModel:
                     "KKR_ZAI_API_KEY is required when KKR_LLM_MODEL uses the 'zai:' provider"
                 )
             return init_chat_model(
-                f"openai:{name}",
+                f"openai:{model_override or name}",
                 temperature=0,
                 base_url=settings.zai_api_base,
                 api_key=settings.zai_api_key,

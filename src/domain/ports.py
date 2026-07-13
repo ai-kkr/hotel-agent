@@ -14,7 +14,7 @@ from domain.entities import Booking, ChannelSession, Client, Message
 from domain.enums import Channel
 from domain.events import ClientMessage, ConfirmForward, DomainEvent, HotelReply, InboundEmail
 from domain.extraction import ExtractedBooking
-from domain.ids import BookingId, ClientToken, EmailAddress, MessageId
+from domain.ids import BookingId, ClientToken, MessageId
 from domain.intents import AgentIntent, SearchDone, Trigger
 
 # --- Repositories (Postgres-backed) -------------------------------------------------
@@ -66,13 +66,16 @@ class OutboundMailGateway(Protocol):
     async def send(
         self,
         *,
-        booking_id: BookingId,
-        to: EmailAddress,
-        sender: EmailAddress,
-        reply_to: EmailAddress,
+        sender: str,
+        to: list[str],
         subject: str,
-        body: str,
-        idempotency_key: str,
+        text: str | None = None,
+        html: str | None = None,
+        sender_name: str | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        reply_to: str | None = None,
+        category: str | None = None,
     ) -> MessageId: ...
 
 
@@ -161,7 +164,9 @@ class ContactDiscoverer(Protocol):
 class NegotiationAgent(Protocol):
     """The per-booking turn-brain. Reads the trigger, returns an intent (no side-effects)."""
 
-    async def turn(self, booking_id: BookingId, trigger: Trigger, booking: Booking) -> AgentIntent: ...
+    async def turn(
+        self, booking_id: BookingId, trigger: Trigger, booking: Booking
+    ) -> AgentIntent: ...
 
 
 @runtime_checkable

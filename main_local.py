@@ -50,17 +50,28 @@ async def run_local() -> None:
     searcher = FakeWebSearcher()
     fetcher = HttpxWebFetcher()
 
+    # Langfuse tracing is opt-in (KKR_LANGFUSE_ENABLED=true + keys). Empty list when off — the agents
+    # then run with no callbacks, identical to pre-Langfuse behaviour.
+    from infrastructure.observability import get_langfuse_callbacks
+
+    langfuse_callbacks = get_langfuse_callbacks(settings)
+
     agents = build_agents(
         settings,
         model=model,
         checkpointer=checkpointer,
         searcher=searcher,
         fetcher=fetcher,
+        langfuse_callbacks=langfuse_callbacks,
     )
     # The surface agent shares the negotiation stack's LLM + web backends + checkpointer. Wired into
     # the Telegram adapter only when KKR_TELEGRAM_BOT_TOKEN is set (design D10: bot may run separately).
     surface_components = SurfaceComponents(
-        model=model, searcher=searcher, fetcher=fetcher, checkpointer=checkpointer
+        model=model,
+        searcher=searcher,
+        fetcher=fetcher,
+        checkpointer=checkpointer,
+        langfuse_callbacks=langfuse_callbacks,
     )
 
     http_client = httpx.AsyncClient()
@@ -77,14 +88,16 @@ async def run_local() -> None:
     server = uvicorn.Server(config)
     server_task = asyncio.create_task(server.serve(), name="uvicorn")
     worker_task = asyncio.create_task(runtime.worker.run(), name="temporal-worker")
-    # Telegram inbound: long-poll getUpdates → surface agent (only when a bot token is configured).
+    # Telegram inbound: aiogram Dispatcher polls Telegram and routes /start + messages to the surface
+    # adapter (only when a bot token is configured). One polling process per token (Telegram rule).
     telegram_task: asyncio.Task[None] | None = None
-    if runtime.telegram is not None:
-        from infrastructure.telegram.polling import run_telegram
+    if runtime.telegram is not None and runtime.telegram_bot is not None:
+        from infrastructure.telegram.run import start_telegram
 
-        telegram_task = asyncio.create_task(
-            run_telegram(runtime.telegram, poll_timeout=settings.telegram_poll_timeout_seconds),
-            name="telegram-poll",
+        telegram_task = start_telegram(
+            runtime.telegram_bot,
+            runtime.telegram_dispatcher,
+            surface_adapter=runtime.telegram,
         )
     try:
         # server.serve() returns on SIGINT/SIGTERM (uvicorn installs its own handlers).
@@ -98,6 +111,13 @@ async def run_local() -> None:
         worker_task.cancel()
         await http_client.aclose()
         await engine.dispose()
+        # Flush any queued Langfuse events before the process exits (no-op when tracing is off).
+        from infrastructure.observability import shutdown_langfuse
+
+        shutdown_langfuse()
+        # Close the aiogram Bot session (releases its aiohttp client) if polling was wired.
+        if runtime.telegram_bot is not None:
+            await runtime.telegram_bot.session.close()
 
 
 if __name__ == "__main__":

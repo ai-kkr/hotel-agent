@@ -13,35 +13,61 @@ Deployment, mail infrastructure, and observability notes for the concierge agent
   and the LangGraph `PostgresSaver` checkpoint tables (same cluster, separate schema is fine).
 - **Temporal server** — durable execution spine.
 - **Mailgun** — inbound catch-all route + outbound sending (v1; swappable via adapter config).
-- **Telegram bot** — a separate process (design D10) that polls/webhooks Telegram, drives the
-  surface-agnostic conversational agent, and calls the API over a shared secret. It does not own
-  booking state; mutations emit intents executed by the worker.
+- **Telegram bot** — a separate process (design D10) built on `aiogram` (`Bot` + `Dispatcher` +
+  `Router`) that long-polls Telegram, drives the surface-agnostic conversational agent, and pushes
+  outbound progress to chats. It does not own booking state; mutations emit intents executed by the
+  worker.
 
-## Telegram surface — design D1/D4/D5/D7/D10
+## Telegram surface — design D1/D2/D4/D5/D6/D7/D10
 
 The Telegram surface layers a live conversational agent over the durable core without duplicating
-intake/extraction/negotiation:
+intake/extraction/negotiation. It is implemented on `aiogram` v3 (`infrastructure.telegram`):
 
-- **Bot → API auth** — the bot calls `POST /api/client-mailbox` (and `/api/client-message`) with the
-  shared secret `KKR_BOT_API_SECRET` in `X-Bot-Secret` (or `Authorization: Bearer <secret>`), not
-  user credentials. The endpoint is disabled (503) when the secret is unset; a wrong/missing secret
-  is rejected with 401. `get_user_mailbox` is the only bot-facing creator; it lazily registers a
-  private `c.<token>@` mailbox (never shown to the user) and binds a `ChannelSession`
-  (`client_token ↔ chat_id`).
-- **Inbound** — a chat message routes to the surface agent thread keyed by the client's
-  `ChannelSession` (`chat_id`). A forwarded confirmation is delegated to `ChatIntakeService` → the
-  shared extractor + `start_booking` (chat-origin clients skip SPF/DKIM; the secret mailbox is the
-  identity anchor). `RequestUserDecision` renders as an inline keyboard; a button press resumes the
-  agent with the chosen option.
+- **Bot + Dispatcher** — `infrastructure.telegram.bot.AiogramBotPort` wraps `aiogram.Bot` behind the
+  outbound `TelegramBotPort` (so the adapter/notifier stay unit-testable with a recording fake);
+  `infrastructure.telegram.routers.build_router()` registers the handlers on an `aiogram.Dispatcher`.
+  Polling is driven by `infrastructure.telegram.run.start_telegram(bot, dp, surface_adapter=...)`,
+  which runs `dp.start_polling(bot, …)` as a background `asyncio.Task`. Only one process may poll a
+  given bot token (Telegram rejects concurrent `getUpdates`).
+- **`/start` greeting (prepared, non-LLM)** — a `CommandStart` handler resolves/creates the client's
+  mailbox via `mailbox.resolve_or_create(Channel.TELEGRAM, chat_id)` and replies with a prepared
+  message stating the bot's capabilities and the client's individual forward address
+  `c.<token>@kkr-hotel.com` (revealed on first contact; repeat `/start` is idempotent — same address).
+- **Inbound (free-text, no keyboards)** — a chat message routes to the surface agent thread keyed by
+  the client's `ChannelSession` (`chat_id`). The structured-choice `RequestUserDecision` artifact and
+  the entire inline-keyboard / callback-query path are **removed**: `ask_user` renders its question
+  and options as plain-text hints; the guest replies freely and the agent (LLM) interprets the answer,
+  including multiple selections in one message (`allowed_updates = ["message"]`).
+- **Typing indicator** — while a surface-agent turn runs, the adapter emits `sendChatAction("typing")`
+  every ~4 s via a background ticker (`adapter._typing`) and stops it when the turn completes.
 - **Outbound progress** — the worker emits progress events on user-visible transitions
   (`contact_ready`, `sent`, `hotel_replied`, `report`, `cancelled`) via the generalized
   `ClientNotifier`, routed to the client's channel through `ChannelSession` (Telegram chat if a
   session exists, else email) and coalesced to avoid flooding.
 - **Cancellation** — `delete_task` emits a `CancelBooking` intent; `CancellationService` cancels the
   Temporal workflow (`workflow_id == booking_id`) and moves the booking to `CANCELLED` idempotently.
-- **Config** — `KKR_TELEGRAM_BOT_TOKEN` (empty disables the adapter), `KKR_TELEGRAM_POLLING`
-  (true = long-poll; false = webhook), `KKR_BOT_API_SECRET`. Run the bot as its own process in
-  production; locally `main_local.py` composes it in-process when the token is set.
+- **Lifecycle** — polling is managed in the process entrypoint (`main_local.py`), not the FastAPI
+  lifespan: the polling task is cancelled and `bot.session.close()` is awaited on shutdown, mirroring
+  how the Temporal worker task is managed.
+- **Config** — `KKR_TELEGRAM_BOT_TOKEN` (empty disables the surface), `KKR_TELEGRAM_POLLING`
+  (true = long-poll via `aiogram.Dispatcher`; webhook mode is a future slot), `KKR_BOT_API_SECRET`.
+  Run the bot as its own process in production; locally `main_local.py` composes it in-process when
+  the token is set (API :8000 + Temporal worker + Telegram poller in one process).
+
+## Security & identity — revealed forward address (design D5)
+
+The personal `c.<token>@kkr-hotel.com` is a **revealed, bearer-capability** address — a scoped
+revision of the prior "mailbox never surfaced" stance:
+
+- It is shown **only to its owning client** (in the `/start` greeting). The token is high-entropy
+  (`secrets.token_hex`), so possession of the address is treated as proof of ownership.
+- **Intake auth by origin** (domain `IntakeService`): a confirmation emailed to `c.<token>@` is
+  accepted **by token possession** when the owning client has **no registered email** (chat-origin);
+  clients **with** a registered email (email-channel) keep strict `sender == client.email` matching,
+  unchanged. Unknown tokens are rejected on both paths.
+- **Blast radius** is bounded: a leaked `c.<token>@` can at most inject a confirmation for that one
+  client (triggering one bounded negotiation) — it does not grant access to other clients or to
+  booking state. Mitigated by token entropy; documented here as an intentional, scoped exception.
 
 ## DNS (`*@kkr-hotel.com`) — spec 10.1
 

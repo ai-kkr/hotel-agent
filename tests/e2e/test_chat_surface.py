@@ -37,11 +37,18 @@ class RecordingBot:
         self.sent: list[tuple[str, str]] = []
 
     async def send_message(
-        self, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None
+        self,
+        chat_id: str,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        *,
+        parse_mode: str | None = None,
     ) -> None:
         self.sent.append((chat_id, text))
 
-    async def answer_callback_query(self, callback_query_id: str, text: str = "") -> None: ...
+    async def send_chat_action(self, chat_id: str, action: str) -> None:
+        # Not exercised by the E2E (the notifier only sends messages); present to satisfy the port.
+        ...
 
 
 class RecordingGateway:

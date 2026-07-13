@@ -19,6 +19,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="KKR_", env_file=".env", extra="ignore")
 
+    #
+    is_dev: bool = True
     # --- Mail provider / Mailgun (v1) ---
     mail_provider: MailProvider = "mailgun"
     mail_domain: str = "kkr-hotel.com"
@@ -72,6 +74,26 @@ class Settings(BaseSettings):
     telegram_polling: bool = True  # True = long-poll; False = webhook (url configured out-of-band)
     # Server-side long-poll seconds for getUpdates (HTTP read timeout is padded beyond this).
     telegram_poll_timeout_seconds: int = Field(default=30, ge=1)
+
+    # --- Langfuse (LLM observability; self-hosted via docker compose) ---
+    # Tracing is OFF unless explicitly enabled AND keys are present, so local/test runs without
+    # the Langfuse stack stay clean. Keys must match LANGFUSE_INIT_PROJECT_* from the compose file.
+    langfuse_enabled: bool = False
+    langfuse_host: str = "http://localhost:3000"
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+
+    # mailtrap integration (inbound webhook) for local development / testing. In production, inbound
+    mailtrap_api_key: str = ""
+    mailtrap_signing_secret: str = ""
+    mailtrap_inbox_id: int = 0
+    mailtrap_base_url: str = "https://mailtrap.io"
+    # Verified Mailtrap sending address used as the ``From`` for outbound mail (must be on a
+    # domain verified under Mailtrap Email API → Sending Domains; the inbound inbox address is
+    # not allowed as a sender and yields 401 Unauthorized).
+    mailtrap_from_email: str = ""
+    # tavily
+    tavily_api_key: str = ""
 
 
 def get_settings() -> Settings:

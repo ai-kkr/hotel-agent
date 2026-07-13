@@ -12,8 +12,8 @@ Mailgun stack). In local mode:
   question D5 — swap to ``PostgresSaver`` to be closer to prod).
 
 ``build_local_app`` is pure assembly given the "heavy" collaborators (Temporal client, agents,
-DB session factory); ``main_local.run_local`` connects the real ones and runs worker + API in one
-process. The split keeps the wiring unit-testable without Temporal / LLM / DB.
+DB session factory); ``main_local.run_local`` connects the real ones and runs worker + API + Telegram
+poller in one process. The split keeps the wiring unit-testable without Temporal / LLM / DB.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import httpx
+from aiogram import Bot, Dispatcher
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.client import Client
@@ -46,10 +47,11 @@ from infrastructure.persistence.sqlalchemy_repos import (
     SqlAlchemyChannelSessionRepository,
     SqlAlchemyClientRepository,
 )
-from infrastructure.telegram.adapter import (
-    HttpTelegramBot,
+from infrastructure.telegram import (
+    AiogramBotPort,
     TelegramAdapter,
     TelegramClientNotifier,
+    build_router,
 )
 from infrastructure.workflows.activities import ConciergeActivities
 from infrastructure.workflows.temporal_gateway import TemporalWorkflowGateway
@@ -72,6 +74,10 @@ class LocalRuntime:
     # Telegram surface (inbound adapter). None when no surface agent was provided (bot runs as a
     # separate process per design D10); the API endpoint + outbound notifier still work without it.
     telegram: TelegramAdapter | None = None
+    # The aiogram Bot + Dispatcher used to poll Telegram inbound. None when telegram is None.
+    # ``run_local`` starts/stops polling on these; the FastAPI app itself does not touch them.
+    telegram_bot: Bot | None = None
+    telegram_dispatcher: Dispatcher | None = None
 
 
 def build_local_app(
@@ -90,10 +96,6 @@ def build_local_app(
     bundle, and a DB session factory. Returns a :class:`LocalRuntime` whose ``worker`` is created but
     not started (``run_local`` starts it). Pass ``worker`` to inject a fake (tests) instead of
     constructing a real :class:`Worker` from ``temporal_client``.
-
-    Pass a pre-built ``surface_agent`` to compose the Telegram adapter (design D1/D10) into this
-    process; otherwise the bot runs separately and only the bot-facing API + outbound routing are
-    wired here.
 
     Pass ``surface_components`` (the LLM model + web backends + checkpointer shared with the other
     agents) to build the surface agent here and wire the Telegram adapter when a bot token is set.
@@ -129,13 +131,16 @@ def build_local_app(
         gateway=outbox_gateway, clients=clients_repo, mail_domain=settings.mail_domain
     )
     channels: dict[Channel, ClientNotifier] = {}
-    telegram_bot = (
-        HttpTelegramBot(settings.telegram_bot_token, client=client_http)
-        if settings.telegram_bot_token
-        else None
+    # The aiogram Bot for both inbound polling and outbound sends; wrapped in AiogramBotPort for the
+    # adapter/notifier so they stay unit-testable with a recording fake. None when no token is set.
+    telegram_bot: Bot | None = (
+        Bot(token=settings.telegram_bot_token) if settings.telegram_bot_token else None
     )
-    if telegram_bot is not None:
-        channels[Channel.TELEGRAM] = TelegramClientNotifier(bot=telegram_bot, sessions=sessions_repo)
+    telegram_bot_port = AiogramBotPort(telegram_bot) if telegram_bot is not None else None
+    if telegram_bot_port is not None:
+        channels[Channel.TELEGRAM] = TelegramClientNotifier(
+            bot=telegram_bot_port, sessions=sessions_repo
+        )
     notifier: ClientNotifier = CoalescingClientNotifier(
         inner=RoutingClientNotifier(
             sessions=sessions_repo, email=email_notifier, channels=channels
@@ -179,7 +184,8 @@ def build_local_app(
 
     # Telegram inbound surface (optional; the bot may run as a separate process, design D10).
     telegram: TelegramAdapter | None = None
-    if surface_components is not None and telegram_bot is not None:
+    telegram_dispatcher: Dispatcher | None = None
+    if surface_components is not None and telegram_bot_port is not None:
         chat_intake = ChatIntakeService(
             sessions=sessions_repo, clients=clients_repo, gateway=workflow_gateway
         )
@@ -188,6 +194,7 @@ def build_local_app(
             searcher=surface_components.searcher,
             fetcher=surface_components.fetcher,
             checkpointer=surface_components.checkpointer,
+            langfuse_callbacks=surface_components.langfuse_callbacks,
             deps=SurfaceDeps(
                 mailbox=mailbox,
                 sessions=sessions_repo,
@@ -196,8 +203,11 @@ def build_local_app(
             ),
         )
         telegram = TelegramAdapter(
-            bot=telegram_bot, agent=surface_agent, sessions=sessions_repo, mailbox=mailbox
+            bot=telegram_bot_port, agent=surface_agent, sessions=sessions_repo, mailbox=mailbox
         )
+        # aiogram dispatcher: routes /start + messages to the adapter via DI (surface_adapter kwarg).
+        telegram_dispatcher = Dispatcher()
+        telegram_dispatcher.include_router(build_router())
 
     _logger.info(
         "local.runtime.assembled",
@@ -207,6 +217,12 @@ def build_local_app(
         telegram_surface=telegram is not None,
     )
     return LocalRuntime(
-        app=app, worker=worker, temporal_client=temporal_client, http_client=client_http,
-        outbox_gateway=outbox_gateway, telegram=telegram,
+        app=app,
+        worker=worker,
+        temporal_client=temporal_client,
+        http_client=client_http,
+        outbox_gateway=outbox_gateway,
+        telegram=telegram,
+        telegram_bot=telegram_bot,
+        telegram_dispatcher=telegram_dispatcher,
     )

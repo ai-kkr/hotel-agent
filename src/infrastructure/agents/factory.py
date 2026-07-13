@@ -6,7 +6,9 @@ Production passes a :class:`PostgresSaver`; tests pass an :class:`InMemorySaver`
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -24,6 +26,10 @@ from infrastructure.agents.reporter import ReportBuilderAgent
 from infrastructure.agents.tools import WebFetcher, WebSearcher
 from infrastructure.config import Settings
 
+# A LangChain callback handler (e.g. langfuse.langchain.CallbackHandler). Typed loosely since
+# langfuse is an optional dependency; an empty list means "tracing disabled".
+LangfuseCallbacks = list[Callable[..., Any]]
+
 
 @dataclass(frozen=True)
 class AgentBundle:
@@ -40,13 +46,15 @@ def build_agents(
     checkpointer: BaseCheckpointSaver,
     searcher: WebSearcher,
     fetcher: WebFetcher,
+    langfuse_callbacks: LangfuseCallbacks | None = None,
 ) -> AgentBundle:
     """Construct all four agent implementations with shared collaborators."""
+    langfuse_callbacks = langfuse_callbacks or []
     return AgentBundle(
         extractor=ConfirmationExtractorAgent(
             model, confidence_threshold=settings.extraction_confidence_threshold
         ),
-        discoverer=ContactDiscovererAgent(model, searcher, fetcher),
-        negotiator=NegotiationAgentImpl(model, searcher, fetcher, checkpointer),
+        discoverer=ContactDiscovererAgent(model, searcher, fetcher, langfuse_callbacks),
+        negotiator=NegotiationAgentImpl(model, searcher, fetcher, checkpointer, langfuse_callbacks),
         reporter=ReportBuilderAgent(model),
     )
