@@ -10,6 +10,32 @@
 #   - Langfuse UI: localhost:3000 (KKR_LANGFUSE_HOST); headless project keys via LANGFUSE_INIT_*
 
 services:
+  # ===========================================================================
+  # app — само приложение (FastAPI + uvicorn + Telegram polling в lifespan).
+  # Сборка из Dockerfile в корне репозитория. Запуск:
+  #   docker compose up -d --build postgres app        # минимум
+  #   docker compose up -d --build                      # весь стек (вкл. Langfuse)
+  # .env подгружается через env_file; DSN-override ниже переподставляют хосты
+  # localhost → имена compose-сервисов (env-переменные бьют над .env в pydantic-settings).
+  # ===========================================================================
+  app:
+    build: .
+    image: kkr-hotel-assist:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Внутри compose-сети БД и Langfuse достижимы по именам сервисов, не по localhost.
+      KKR_POSTGRES_DSN: postgresql+asyncpg://postgres:postgres@postgres:5432/kkr
+      KKR_LANGGRAPH_DSN: postgresql://postgres:postgres@postgres:5432/kkr
+      KKR_LANGFUSE_HOST: http://langfuse-web:3000
+    ports:
+      - "8019:8000"   # Mailtrap inbound-webhook: http://<host>:8019/send_test_email
+    depends_on:
+      postgres:
+        condition: service_healthy
+      langfuse-web:
+        condition: service_started
+
   postgres:
     image: postgres:16
     environment:
@@ -122,7 +148,7 @@ services:
     restart: always
     depends_on: *langfuse-depends-on
     ports:
-      - "3000:3000"
+      - "8018:3000"   # Langfuse UI: http://<host>:8018
     environment:
       <<: *langfuse-worker-env
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-mysecret}
@@ -189,8 +215,10 @@ services:
       MINIO_ROOT_USER: ${LANGFUSE_MINIO_ROOT_USER:-minio}
       MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:-miniosecret}
     ports:
-      - "9090:9000"
-      - "127.0.0.1:9091:9001"
+      # API-порт minio вынесен в переменную: на хостах, где 9090 занят (например Cockpit на nas),
+      # задайте KKR_MINIO_PORT в .env.
+      - "${KKR_MINIO_PORT:-9090}:9000"
+      - "127.0.0.1:${KKR_MINIO_CONSOLE_PORT:-9091}:9001"
     volumes:
       - langfuse_minio_data:/data
     healthcheck:

@@ -41,6 +41,14 @@ uv run alembic revision -m "..."          # autogen a migration
 
 Config is env-driven, prefix `KKR_`, read from environment + `.env` (see `src/config.py`,
 template `.env.example`). The truth-of-the-source for any setting is `src/config.py`, not the docs.
+In addition to env/`.env`, any setting can be supplied via `config.yaml` (path override
+`KKR_CONFIG_FILE`) — a layered `YamlConfigSettingsSource` for structured, version-controlled tuning
+(LLM timeout/retries, per-tool retry policies). Precedence: constructor > env > `.env` > YAML >
+defaults. LLM calls carry a configurable `timeout` (`llm_timeout_seconds`, default 60) and
+`max_retries` (`llm_max_retries`, default 3), set on the chat model so they cover both the agent
+model node and the direct `model.ainvoke` in `_compose_letter`. Tool calls are retried per-tool by
+`ToolRetryMiddleware` (config: `tool_retry`, each tool its own `ToolRetryPolicy` in `config.yaml`;
+mail-sending tools never retry, network tools do).
 
 Tests don't exist yet but **will** — the project uses **pytest**. `pyproject.toml` already
 configures it (`asyncio_mode = "auto"`, `pythonpath = [".", "scripts"]`); `respx` and `aiosqlite`

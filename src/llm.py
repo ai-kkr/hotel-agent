@@ -31,15 +31,24 @@ def build_model(
       ``base_url = settings.openrouter_api_base`` and ``api_key = settings.openrouter_api_key``.
 
     Unknown prefixes raise a clear configuration error rather than failing later inside an agent.
+
+    ``timeout`` and ``max_retries`` are applied to every provider's chat model. Because all
+    supported providers route through the OpenAI-compatible adapter, this also covers the direct
+    ``model.ainvoke`` call in ``_compose_letter`` (which bypasses agent middleware).
     """
     model = settings.llm_model
+    # Common kwargs for every provider: request timeout + HTTP retry budget.
+    common: dict[str, Any] = {
+        "timeout": settings.llm_timeout_seconds or None,
+        "max_retries": settings.llm_max_retries,
+    }
     if ":" not in model:
-        return init_chat_model(model, model_provider="openai", temperature=0)
+        return init_chat_model(model, model_provider="openai", temperature=0, **common)
 
     provider, _, name = model.partition(":")
     match provider:
         case "openai":
-            return init_chat_model(model, temperature=0)
+            return init_chat_model(model, temperature=0, **common)
         case "zai":
             if not settings.zai_api_key:
                 raise ValueError(
@@ -50,6 +59,7 @@ def build_model(
                 temperature=0,
                 base_url=settings.zai_api_base,
                 api_key=settings.zai_api_key,
+                **common,
             )
         case "openrouter":
             if not settings.openrouter_api_key:
@@ -64,6 +74,7 @@ def build_model(
                 "temperature": 0,
                 "base_url": settings.openrouter_api_base,
                 "api_key": settings.openrouter_api_key,
+                **common,
             }
             if settings.openrouter_reasoning_effort:
                 kwargs["reasoning_effort"] = settings.openrouter_reasoning_effort

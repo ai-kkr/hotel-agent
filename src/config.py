@@ -1,23 +1,103 @@
 """Application configuration (pydantic-settings).
 
-All environment-driven knobs live here. Adapter selection (mail provider) is a config value so
-swapping providers is a deployment concern, not a code change.
+All environment-driven knobs live here. Configuration is loaded from (later sources win, so
+earlier in the list = higher priority):
+
+1. constructor kwargs
+2. environment variables (prefix ``KKR_``) — best for secrets / per-deploy overrides
+3. ``.env`` file
+4. optional YAML file (``KKR_CONFIG_FILE``, default ``config.yaml``) — best for structured,
+   version-controlled tuning (LLM timeouts, per-tool retry policies, …)
+5. field defaults
+
+The truth-of-the-source for any setting is this module; the YAML file mirrors field names.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 MailProvider = Literal["mailgun", "custom", "stub"]
+
+
+class ToolRetryPolicy(BaseModel):
+    """Retry policy for a single tool (or the default applied to unnamed tools).
+
+    ``retry_on`` selects which exceptions are retried:
+
+    - ``"transient"`` (default): retry on anything that is *not* a deterministic/logic error
+      (``SelfCorrectionError``, ``ValueError``, ``TypeError``, …). Network blips get retried;
+      precondition/logic failures surface immediately.
+    - ``"all"``: retry on every exception except ``SelfCorrectionError`` (which is handled by
+      :class:`SelfCorrectionMiddleware` and must never be retried).
+    """
+
+    max_retries: int = Field(default=0, ge=0)
+    backoff_factor: float = Field(default=2.0, ge=0.0)
+    initial_delay: float = Field(default=1.0, ge=0.0)
+    max_delay: float = Field(default=30.0, ge=0.0)
+    jitter: bool = True
+    retry_on: Literal["transient", "all"] = "transient"
+
+
+class ToolRetryConfig(BaseModel):
+    """Per-tool retry configuration.
+
+    ``default`` is the fallback for any tool not listed in ``overrides``; ``overrides`` maps a
+    tool name (as the agent calls it, e.g. ``send_wishes_to_hotel``) to its own policy.
+    """
+
+    default: ToolRetryPolicy = Field(default_factory=ToolRetryPolicy)
+    overrides: dict[str, ToolRetryPolicy] = Field(default_factory=dict)
+
+
+_DEFAULT_YAML_PATH = "config.yaml"
 
 
 class Settings(BaseSettings):
     """Runtime configuration, sourced from environment (prefix ``KKR_``) or a ``.env`` file."""
 
-    model_config = SettingsConfigDict(env_prefix="KKR_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="KKR_",
+        env_file=".env",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Layer env > .env > YAML > defaults.
+
+        The YAML path is read straight from the environment (``KKR_CONFIG_FILE``, default
+        ``config.yaml``) rather than from a parsed field, to avoid the chicken-and-egg of needing
+        a fully constructed :class:`Settings` to know which file to load. A missing file is
+        silently skipped, so runs without one stay clean.
+        """
+        sources: list[PydanticBaseSettingsSource] = [
+            init_settings,
+            env_settings,
+            dotenv_settings,
+        ]
+        yaml_path = os.environ.get("KKR_CONFIG_FILE") or _DEFAULT_YAML_PATH
+        if os.path.exists(yaml_path):
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=yaml_path))
+        return tuple(sources)
 
     #
     is_dev: bool = True
@@ -56,6 +136,13 @@ class Settings(BaseSettings):
     # ``llm_model`` is "<provider>:<name>" (e.g. "openai:gpt-4o-mini", "zai:glm-5.2") or a bare name
     # (provider inferred as openai). See ``src.llm.build_model``.
     llm_model: str = "gpt-4o-mini"
+    # Per-request timeout (seconds) applied to every chat-model call — both the agent's model node
+    # and the direct ``model.ainvoke`` in ``_compose_letter``. ``0`` = no timeout (let the provider
+    # decide). Passed as ``timeout=`` to the langchain chat model.
+    llm_timeout_seconds: float = Field(default=60.0, ge=0.0)
+    # Max retry attempts on a failed chat-model HTTP call (timeouts, 5xx, transport errors).
+    # Applied at the provider client level, so it also covers ``_compose_letter``. ``0`` = no retry.
+    llm_max_retries: int = Field(default=3, ge=0)
     # Z.AI / Zhipu GLM provider (OpenAI-compatible). Used when llm_model is "zai:<model>".
     # Default base_url points at the **Coding Plan** OpenAI-compatible endpoint (billed against the
     # subscription, NOT the pay-as-you-go PaaS balance). Override KKR_ZAI_API_BASE to switch platforms
@@ -72,6 +159,12 @@ class Settings(BaseSettings):
     # reasoning; ``none`` disables reasoning entirely where the model supports it.
     # ``None`` leaves the provider default. See https://openrouter.ai/docs/api/reference/parameters.
     openrouter_reasoning_effort: str | None = "minimal"
+
+    # --- Tool retry policy ---
+    # Per-tool retry behaviour, applied by :class:`ToolRetryMiddleware`. Defaults are conservative:
+    # the catch-all default does not retry, and each tool is given an explicit policy in
+    # ``config.yaml`` (sending tools never retry, network tools do).
+    tool_retry: ToolRetryConfig = Field(default_factory=ToolRetryConfig)
 
     # --- Outbound report delivery channel (v1 = email) ---
     client_channel: Literal["email"] = "email"
@@ -104,6 +197,14 @@ class Settings(BaseSettings):
     mailtrap_from_email: str = ""
     # tavily
     tavily_api_key: str = ""
+
+    # --- Optional YAML config file (``KKR_CONFIG_FILE`` overrides). Pure metadata: the path is
+    # actually read in :meth:`settings_customise_sources` before fields are parsed. ---
+    config_file: str = _DEFAULT_YAML_PATH
+
+    def tool_retry_policy(self, tool_name: str) -> ToolRetryPolicy:
+        """Resolve the retry policy for ``tool_name``, falling back to the default."""
+        return self.tool_retry.overrides.get(tool_name, self.tool_retry.default)
 
 
 def get_settings() -> Settings:

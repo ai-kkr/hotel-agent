@@ -6,13 +6,17 @@ describing the problem. The agent sees that message on its next turn and correct
 user, fill in missing booking info, …) instead of crashing the graph.
 """
 
+import asyncio
+import random
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
+from pydantic import ValidationError
 
+from src.config import ToolRetryConfig, ToolRetryPolicy
 from src.context import get_context
 from src.logging import get_logger
 
@@ -20,7 +24,7 @@ from .context import EmailContext
 from .exceptions import SelfCorrectionError
 from .state import EmailState
 
-__all__ = ["SelfCorrectionMiddleware"]
+__all__ = ["SelfCorrectionMiddleware", "ToolRetryMiddleware"]
 
 log = get_logger(__name__)
 
@@ -54,6 +58,118 @@ class SelfCorrectionMiddleware(AgentMiddleware):
                 ),
                 tool_call_id=tool_call_id,
             )
+
+
+#: Exception types that represent a deterministic / logic failure, never a transient blip. Retrying
+#: these would just re-raise the same error, so they bypass the retry loop entirely. Note that
+#: :class:`SelfCorrectionError` is in here too — it is handled upstream by
+#: :class:`SelfCorrectionMiddleware` and must never be retried (a tool re-invocation would just
+#: re-fail the same precondition).
+_DETERMINISTIC_ERRORS: tuple[type[BaseException], ...] = (
+    SelfCorrectionError,
+    ValidationError,
+    ValueError,
+    TypeError,
+    KeyError,
+    AttributeError,
+    IndexError,
+)
+
+
+def _is_retryable(exc: BaseException, *, mode: str) -> bool:
+    """Whether ``exc`` should be retried under the given ``mode`` (``transient`` or ``all``)."""
+    if isinstance(exc, _DETERMINISTIC_ERRORS):
+        return False
+    if mode == "all":
+        return True
+    # ``transient``: retry anything non-deterministic (network blips, provider 5xx, timeouts, …).
+    # We deliberately err toward retrying rather than maintaining an allowlist of every client's
+    # exception types; deterministic logic errors are already excluded above.
+    return not isinstance(exc, _DETERMINISTIC_ERRORS)
+
+
+def _backoff_delay(policy: ToolRetryPolicy, attempt: int) -> float:
+    """Exponential backoff for ``attempt`` (0-indexed), capped at ``max_delay`` + optional jitter."""
+    delay = min(policy.initial_delay * (policy.backoff_factor**attempt), policy.max_delay)
+    if policy.jitter and delay > 0:
+        delay *= random.uniform(0.75, 1.25)  # jitter, not crypto
+    return max(delay, 0.0)
+
+
+class ToolRetryMiddleware(AgentMiddleware):
+    """Retry failing tool calls with per-tool policies.
+
+    Each tool gets its own :class:`ToolRetryPolicy` (from :class:`ToolRetryConfig`, sourced from
+    ``config.yaml``): a mail-sending tool should not retry (an intermittent success would send the
+    letter twice), while a network tool (``search_internet``, ``extract_web_page``) benefits from
+    a few retries with exponential backoff.
+
+    Sits *inside* :class:`SelfCorrectionMiddleware` in the middleware chain: a
+    :class:`SelfCorrectionError` raised by the tool propagates straight through this middleware
+    (it's in :data:`_DETERMINISTIC_ERRORS`) and is caught by the self-correction layer. When all
+    retries are exhausted the failure is surfaced to the agent as a ``ToolMessage`` (rather than
+    crashing the turn), so the agent can tell the guest something went wrong.
+    """
+
+    def __init__(self, config: ToolRetryConfig) -> None:
+        super().__init__()
+        self.config = config
+
+    def _policy_for(self, tool_name: str) -> ToolRetryPolicy:
+        return self.config.overrides.get(tool_name, self.config.default)
+
+    async def awrap_tool_call(  # type: ignore[override]
+        self,
+        request: Any,
+        handler: Any,
+    ) -> Any:
+        tool_call = request.tool_call
+        if isinstance(tool_call, dict):
+            tool_name = tool_call.get("name", "")
+            tool_call_id = tool_call.get("id", "")
+        else:
+            tool_name = getattr(tool_call, "name", "")
+            tool_call_id = getattr(tool_call, "id", "")
+
+        policy = self._policy_for(tool_name)
+        last_exc: BaseException | None = None
+        # Initial attempt + up to ``max_retries`` retries.
+        for attempt in range(policy.max_retries + 1):
+            try:
+                return await handler(request)
+            except Exception as exc:
+                last_exc = exc
+                if not _is_retryable(exc, mode=policy.retry_on):
+                    raise
+                if attempt >= policy.max_retries:
+                    break
+                delay = _backoff_delay(policy, attempt)
+                log.warning(
+                    "agent.tool_retry",
+                    tool=tool_name,
+                    attempt=attempt + 1,
+                    max_retries=policy.max_retries,
+                    delay=round(delay, 3),
+                    error=str(exc),
+                )
+                await asyncio.sleep(delay)
+
+        # Retries exhausted: surface a ToolMessage so the agent can react instead of crashing.
+        attempts = policy.max_retries + 1
+        log.error(
+            "agent.tool_retry_exhausted",
+            tool=tool_name,
+            attempts=attempts,
+            error=str(last_exc),
+        )
+        return ToolMessage(
+            content=(
+                f"Tool '{tool_name}' failed after {attempts} attempt(s): {last_exc}. "
+                "Сообщи пользователю, что действие не удалось, и при необходимости попробуй "
+                "альтернативу."
+            ),
+            tool_call_id=tool_call_id,
+        )
 
 
 class OpenRouterStickySessionMiddleware(AgentMiddleware):

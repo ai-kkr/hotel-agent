@@ -1,0 +1,42 @@
+# Локальные окружения и кэши — в образ не нужны.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Кэши инструментов.
+.ruff_cache/
+.ty_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Git и IDE.
+.git/
+.gitignore
+.vscode/
+.idea/
+.claude/
+.agents/
+.clinerules
+
+# Секреты и PII — НИКОГДА не пекутся в образ. .env передаётся через compose env_file.
+.env
+.env.*
+!.env.example
+.secrets/
+credentials.json
+token.json
+privatekey.pem
+*.eml
+corpus_output/
+.kkr-hotel-corpus/
+
+# Локальный мусор.
+.DS_Store
+experiments/
+ideas/
+docs/
+*.tar.gz

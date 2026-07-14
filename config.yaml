@@ -1,0 +1,53 @@
+# kkr-hotel-assist — структурированный конфиг (YAML).
+#
+# Любое поле из src/config.py можно задать здесь по имени (без префикса KKR_).
+# Приоритет (выше = важнее): конструктор > переменные окружения (KKR_*) > .env > этот файл > дефолты.
+# Секреты (ключи, токены) держите в .env/окружении, а не здесь. Сюда — настраиваемые параметры.
+# Путь к файлу можно переопределить через KKR_CONFIG_FILE.
+
+# --- LLM ---
+# Таймаут одного вызова модели (секунды). 0 = без таймаута (по усмотрению провайдера).
+# Применяется и к model-узлу агента, и к прямому model.ainvoke при компоновке письма.
+llm_timeout_seconds: 60
+# Кол-во повторных попыток при сбое HTTP-вызова модели (таймаут / 5xx / транспорт). 0 = без ретраев.
+llm_max_retries: 3
+
+# --- Retry-политики для инструментов ---
+# Каждому инструменту — своя политика. ``default`` применяется к любому не перечисленному инструменту.
+# Поля политики:
+#   max_retries   — доп. попыток после первой (0 = не повторять);
+#   backoff_factor, initial_delay, max_delay, jitter — параметры экспоненциального backoff;
+#   retry_on      — "transient" (по умолчанию: повторяем всё, кроме логических ошибок и
+#                   SelfCorrectionError) или "all" (повторять любое исключение, кроме
+#                   SelfCorrectionError).
+tool_retry:
+  default:
+    max_retries: 0
+  overrides:
+    # Отправка писем никогда не повторяется: промежуточный успех может отправить письмо дважды.
+    send_wishes_to_hotel:
+      max_retries: 0
+    reply_to_hotel:
+      max_retries: 0
+    # Чистая работа с состоянием — повторять нечего.
+    set_booking_info:
+      max_retries: 0
+    inform_step:
+      max_retries: 0
+    cancel_task:
+      max_retries: 0
+    # Сетевые инструменты — повторяем с backoff.
+    search_internet:
+      max_retries: 3
+      backoff_factor: 2.0
+      initial_delay: 1.0
+      max_delay: 30.0
+      jitter: true
+      retry_on: transient
+    extract_web_page:
+      max_retries: 3
+      backoff_factor: 2.0
+      initial_delay: 1.0
+      max_delay: 30.0
+      jitter: true
+      retry_on: transient

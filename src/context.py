@@ -96,7 +96,16 @@ def build_context(settings: Settings | None = None) -> ApplicationContext:
     # LangGraph checkpointer pool, opened later in the lifespan. ``open=False`` because this runs
     # outside any event loop; the schema (checkpoint_* tables) is applied by ``setup()`` in
     # ``init_graph`` — those tables are langgraph-owned, not part of alembic.
-    checkpoint_pool = AsyncConnectionPool(conninfo=settings.langgraph_dsn, open=False)
+    #
+    # ``autocommit=True`` mirrors ``AsyncPostgresSaver.from_conn_string``: some checkpoint
+    # migrations issue ``CREATE INDEX CONCURRENTLY``, which Postgres forbids inside a transaction
+    # block. Without autocommit setup() crashes on a fresh DB. ``prepare_threshold=0`` matches the
+    # official factory too (avoids prepared-statement reuse issues across pooled connections).
+    checkpoint_pool = AsyncConnectionPool(
+        conninfo=settings.langgraph_dsn,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+    )
     ctx = ApplicationContext(
         bot=bot,
         mailtrap_client=mailtrap_client,
