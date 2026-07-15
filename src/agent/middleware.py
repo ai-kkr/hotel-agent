@@ -17,7 +17,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import ValidationError
 
 from src.config import ToolRetryConfig, ToolRetryPolicy
-from src.context import get_context
 from src.logging import get_logger
 
 from .context import EmailContext
@@ -211,46 +210,3 @@ class OpenRouterStickySessionMiddleware(AgentMiddleware):
         extra_body = {**(request.model_settings.get("extra_body") or {}), "session_id": session_id}
         settings = {**request.model_settings, "extra_body": extra_body}
         return await handler(request.override(model_settings=settings))
-
-
-class ModelSwitchingMiddleware(AgentMiddleware[EmailState, EmailContext, EmailState]):  # ty:ignore[invalid-type-arguments]
-    async def awrap_model_call(
-        self,
-        request: ModelRequest[EmailContext],  # ty:ignore[invalid-type-arguments]
-        handler: Callable[
-            [ModelRequest[EmailContext]],  # ty:ignore[invalid-type-arguments]
-            Awaitable[ModelResponse[EmailState]],
-        ],
-    ) -> ModelResponse[EmailState] | AIMessage | ExtendedModelResponse[EmailState]:
-
-        ctx = request.runtime.context
-        app_ctx = get_context()
-        model_name = ctx.get("model_name")
-        match model_name:
-            case "glm-5.2":
-                # do something for glm-5.2
-                pass
-            case _:
-                return await super().awrap_model_call(request, handler)
-        return await super().awrap_model_call(request, handler)
-
-
-# @wrap_model_call
-# def dynamic_model(
-#     request: ModelRequest[EmailContext],  # ty:ignore[invalid-type-arguments]
-#     handler: Callable[[ModelRequest], ModelResponse],
-# ) -> ModelResponse:
-#     context: EmailContext = request.runtime.context
-#     model_name = context.get("model_name")
-#     match model_name:
-#         case "claude-haiku-4-5-20251001":
-#             model = simple_model
-#         case "claude-sonnet-4-6":
-#             model = complex_model
-#         case _:
-#             return handler(request)
-#     if len(request.messages) > 10:
-#         model = complex_model
-#     else:
-#         model = simple_model
-#     return handler(request.override(model=model))
