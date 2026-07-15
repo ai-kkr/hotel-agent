@@ -12,6 +12,9 @@ from src.integrations.mailtrap.mailtrap_send.client import (
     AuthenticatedClient as SendAuthenticatedClient,
 )
 from src.integrations.mailtrap.mailtrap_send.models.address import Address
+from src.integrations.mailtrap.mailtrap_send.models.email_sending_headers_headers import (
+    EmailSendingHeadersHeaders,
+)
 from src.integrations.mailtrap.mailtrap_send.models.html_only import HTMLOnly
 from src.integrations.mailtrap.mailtrap_send.models.sent_response import SentResponse
 from src.integrations.mailtrap.mailtrap_send.models.text_and_html import TextAndHTML
@@ -67,7 +70,10 @@ class MailtrapClient:
         if category:
             common["category"] = category
         if headers:
-            common["headers"] = headers
+            # The generated body model expects ``EmailSendingHeadersHeaders`` (a dict-like wrapper
+            # with ``to_dict``), not a plain ``dict`` — wrap it at this boundary so callers pass a
+            # normal ``dict[str, str]``.
+            common["headers"] = EmailSendingHeadersHeaders.from_dict(headers)
 
         if text and html:
             body = TextAndHTML(text=text, html=html, **common)

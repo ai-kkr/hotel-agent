@@ -4,6 +4,8 @@ These compose the outgoing letter / reply, send it via Mailtrap, and persist the
 id so the inbound webhook can later match a hotel reply by its ``In-Reply-To`` header.
 """
 
+import uuid
+
 from langchain.tools import ToolRuntime
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
@@ -81,6 +83,17 @@ def _resolve_recipient(runtime: ToolRuntime[EmailContext, EmailState]) -> str:
     return runtime.state.get("hotel_email") or ""
 
 
+def _make_message_id(from_email: str | None) -> str:
+    """Generate a unique RFC 5322 ``Message-ID`` (``<token@domain>``) that we control.
+
+    Mailtrap's send-response ``message_ids`` are internal UUIDs, NOT the RFC ``Message-ID`` header
+    the recipient sees — and a reply's ``In-Reply-To`` echoes that header. So we set our own
+    ``Message-ID`` and persist it; the inbound webhook then matches a reply by it.
+    """
+    domain = (from_email or "").split("@", 1)[-1] or "mailtrap.local"
+    return f"<{uuid.uuid4().hex}@{domain}>"
+
+
 async def _send_and_persist(
     runtime: ToolRuntime[EmailContext, EmailState],
     *,
@@ -98,17 +111,28 @@ async def _send_and_persist(
     from src.db.session import session_context
 
     ctx = get_context()
+    # Stamp our own Message-ID so a later hotel reply can be matched by ``In-Reply-To``. Merged on
+    # top of any caller headers (``In-Reply-To``/``References`` for ``reply_to_hotel``); we never
+    # clobber those.
+    from_email = runtime.context.get("from_email") or ""
+    message_id = _make_message_id(from_email)
+    sent_headers = {**(headers or {}), "Message-ID": message_id}
     response = await ctx.mailtrap_client.send(
-        sender=runtime.context.get("from_email") or "",
+        sender=from_email,
         to=[to],
         subject=subject,
         text=text,
-        headers=headers,
+        headers=sent_headers,
         reply_to=runtime.context.get("reply_to"),
     )
-    message_id = (response.message_ids or [""])[0]
+    log.info(
+        "mail.sent",
+        message_id=message_id,
+        mailtrap_ids=response.message_ids,
+        to=to,
+    )
     client_id = runtime.context.get("client_id")
-    if message_id and client_id is not None:
+    if client_id is not None:
         async with session_context(ctx.session_factory) as session:
             repo = ClientRepository(session)
             await repo.add_outbound(

@@ -73,6 +73,13 @@ async def send_test_email(
             if msg.in_reply_to
             else None
         )
+        lg.info(
+            "inbound.route",
+            client_id=client.id,
+            in_reply_to=msg.in_reply_to,
+            routed_to="hotel_reply" if outbound is not None else "forwarded",
+            matched_outbound_id=outbound.message_id if outbound is not None else None,
+        )
         if outbound is not None:
             await _handle_hotel_reply(client, ctx, msg, background_tasks)
             continue
