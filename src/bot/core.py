@@ -43,7 +43,7 @@ async def command_start_handler(message: Message) -> None:
         repo = ClientRepository(session)
         client: ClientORM | None = await repo.get_client_by_telegram_id(message.from_user.id)
         if client is None:
-            await repo.add_client(telegram_id=message.from_user.id)
+            client = await repo.add_client(telegram_id=message.from_user.id)
 
     await message.answer(
         text=GREETING_TPL.render(
