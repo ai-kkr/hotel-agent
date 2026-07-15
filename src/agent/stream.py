@@ -27,6 +27,12 @@ _TG_MAX_LEN = 4096
 #: substituted with ``ClientORM.inbox`` when rendering (after streaming, so the token can't be split
 #: across streamed chunks).
 _INBOX_PLACEHOLDER = "$user_inbox"
+#: Trailing punctuation the agent tends to put right after ``$user_inbox`` mid-sentence
+#: (``. , ; : ! ?``) — consumed on substitution so it doesn't dangle as a stray char after the
+#: ``<pre>`` block.
+_INBOX_TRAILING_PUNCT_RE = re.compile(
+    re.escape(_INBOX_PLACEHOLDER) + r"\s*([.,;:!?])"
+)
 
 
 async def stream_graph(
@@ -146,13 +152,17 @@ async def _send_text(bot, chat_id: int, text: str, *, inbox: str = "") -> None:
     """Send ``text`` to the chat as Telegram HTML.
 
     The agent emits Telegram HTML directly (``<b>``, ``<i>``, ``<code>``, ``<a>``). The literal
-    ``$user_inbox`` placeholder is replaced with the real inbox address wrapped in ``<code>`` and
-    HTML-escaped, so the guest sees it in monospace and can copy it with one tap. Long messages
+    ``$user_inbox`` placeholder is replaced with the real inbox address wrapped in a ``<pre>``
+    block and HTML-escaped, so the guest sees it as a wide monospace block and can copy it with one
+    tap. Long messages
     are split at Telegram's 4096 UTF-16 limit, on newline boundaries. Anything unexpected falls
     back to delivering the text tag-stripped.
     """
     if inbox:
-        text = text.replace(_INBOX_PLACEHOLDER, f"<code>{html_decoration.quote(inbox)}</code>")
+        # Drop trailing punctuation the agent placed right after ``$user_inbox`` mid-sentence so
+        # it doesn't dangle after the ``<pre>`` block, then wrap the address itself.
+        text = _INBOX_TRAILING_PUNCT_RE.sub(_INBOX_PLACEHOLDER, text)
+        text = text.replace(_INBOX_PLACEHOLDER, f"<pre>{html_decoration.quote(inbox)}</pre>")
     try:
         for chunk in _split_html(text, _TG_MAX_LEN):
             await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=ParseMode.HTML)
