@@ -45,6 +45,8 @@
   окружения, запуск, миграции, lint/типы.
 - [docs/ops.md](docs/ops.md) — эксплуатация: логирование, Mailtrap (webhook, домены, подпись),
   Alembic, известные нюансы.
+- [docs/deployment.md](docs/deployment.md) — деплой на Railway (IaC, автодеплой из GitHub,
+  переменные/секреты, нюансы).
 
 ## Быстрый старт
 
@@ -57,6 +59,18 @@ uv run python main.py                     # запуск приложения (F
 ```
 
 Полный список переменных и нюансы настройки — в [docs/development.md](docs/development.md).
+
+## Деплой
+
+Продакшен — **Railway**, инфраструктура как код (`.railway/railway.ts`): сервис `app` (собирается
+из корневого `Dockerfile`, источник — GitHub `ai-kkr/hotel-agent`) + managed Postgres; Langfuse
+облачный, Temporal пока отключён. Push в `master` авто-деплоит `app`; `railway up` деплоит
+локальное дерево. Переменные, требующие композиции (`KKR_POSTGRES_DSN` с `+asyncpg`), и все
+секреты выставляются через `scripts/railway-bootstrap.sh`. Подробно — в
+[docs/deployment.md](docs/deployment.md).
+
+> Один bot-token может опрашиваться только одним процессом: локальный/NAS-инстанс и Railway
+> нельзя запускать одновременно.
 
 ## Стек
 
