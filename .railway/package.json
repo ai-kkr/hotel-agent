@@ -1,0 +1,7 @@
+{
+  "name": "kkr-railway-iac",
+  "private": true,
+  "dependencies": {
+    "railway": "3.5.7"
+  }
+}

@@ -2,7 +2,7 @@
 
 Локальная настройка, запуск и инструменты. Поведение и архитектура — в [agent.md](agent.md) и
 [architecture.md](architecture.md); эксплуатационные нюансы (Mailtrap, логи, Alembic) — в
-[ops.md](ops.md).
+[ops.md](ops.md); продакшен-деплой на Railway — в [deployment.md](deployment.md).
 
 ## Требования
 

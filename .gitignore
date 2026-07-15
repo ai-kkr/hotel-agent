@@ -32,3 +32,7 @@ corpus_output/
 .DS_Store
 Thumbs.db
 privatekey.pem
+
+# Railway IaC — TypeScript runner SDK (railway-iac-ts). Локально ставится через
+# `npm install` в .railway/; бинарник резолвится через RAILWAY_IAC_TS_BIN.
+.railway/node_modules/

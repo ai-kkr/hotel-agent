@@ -2,7 +2,8 @@
 
 Операционные нюансы текущей версии: рантайм-процесс, логирование, настройка Mailtrap
 (отправка, inbound-webhook, личные ящики), Alembic и локальный dev-стек. Архитектура — в
-[architecture.md](architecture.md), настройка окружения и запуск — в [development.md](development.md).
+[architecture.md](architecture.md), настройка окружения и запуск — в [development.md](development.md),
+продакшен-деплой на Railway — в [deployment.md](deployment.md).
 
 > Документ описывает **фактическое** состояние кода в [`src/`](../src/). Прежняя версия
 > (Temporal/Mailgun/`presentation.*`) более не используется.

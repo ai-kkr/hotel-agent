@@ -39,6 +39,16 @@ uv run alembic check                      # detect model/DB drift
 uv run alembic revision -m "..."          # autogen a migration
 ```
 
+**Production deploys to Railway as IaC** — topology in `.railway/railway.ts` (managed `postgres` +
+`app` from `github("ai-kkr/hotel-agent")`, cloud Langfuse, Temporal commented out). Push to `master`
+auto-deploys `app`; `railway up --service app` deploys the local tree to the same service. The
+DSL can't compose strings, so `KKR_POSTGRES_DSN` (+asyncpg) and all secrets are set by
+`scripts/railway-bootstrap.sh` and declared `preserve()` in `railway.ts`. `railway config plan` /
+`apply` need `RAILWAY_IAC_TS_BIN="$PWD/.railway/node_modules/.bin/railway-iac-ts"` (TS runner SDK
+installed in `.railway/` via `npm install`; `node_modules` is gitignored). Full guide:
+[docs/deployment.md](docs/deployment.md), [.railway/README.md](.railway/README.md). Only one process
+may poll the bot token — stop the local/NAS instance before running Railway (and vice versa).
+
 Config is env-driven, prefix `KKR_`, read from environment + `.env` (see `src/config.py`,
 template `.env.example`). The truth-of-the-source for any setting is `src/config.py`, not the docs.
 In addition to env/`.env`, any setting can be supplied via `config.yaml` (path override
