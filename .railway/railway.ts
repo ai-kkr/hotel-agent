@@ -113,7 +113,7 @@ export default defineRailway((_ctx) => {
       limitOverride: {
         containers: {
           cpu: 0.1, // 0.1 vCPU
-          memoryBytes: 52428800, // 50 MiB — temporal-ui это Go (Echo), укладывается
+          memoryBytes: 134217728, // 128 MiB — temporal-ui (Go/Echo) OOM-ился на 50 MiB
         },
       },
     },
