@@ -34,7 +34,7 @@ export default defineRailway((_ctx) => {
   // описаны в railway.json (DOCKERFILE builder + entrypoint с alembic).
   const app = service("app", {
     source: github("ai-kkr/hotel-agent"),
-    // Минимальные ресурсы (нагрузка тестовая): 1 реплика, лимит RAM, restart при сбое.
+    // Минимальные ресурсы (нагрузка тестовая): 1 реплика, жёсткие лимиты CPU/RAM, restart при сбое.
     // sleepApplication включён, но polling-бот активен постоянно → эффекта почти нет;
     // останется полезным, если позже перейдём на webhook-only.
     deploy: {
@@ -44,7 +44,8 @@ export default defineRailway((_ctx) => {
       restartPolicyMaxRetries: 10,
       limitOverride: {
         containers: {
-          memoryBytes: 1073741824, // 1 GiB
+          cpu: 0.2, // 0.2 vCPU
+          memoryBytes: 629145600, // 600 MiB
         },
       },
     },
@@ -94,11 +95,27 @@ export default defineRailway((_ctx) => {
       DBNAME: "temporal",
       VISIBILITY_DBNAME: "temporal_visibility",
     },
+    deploy: {
+      limitOverride: {
+        containers: {
+          cpu: 0.1, // 0.1 vCPU
+          memoryBytes: 314572800, // 300 MiB
+        },
+      },
+    },
   });
   const temporalUi = service("temporal-ui", {
     source: image("temporalio/ui:2.45.2"),
     env: {
       TEMPORAL_ADDRESS: "temporal.railway.internal:7233",
+    },
+    deploy: {
+      limitOverride: {
+        containers: {
+          cpu: 0.1, // 0.1 vCPU
+          memoryBytes: 52428800, // 50 MiB — очень тесно для Node; поднять, если OOM
+        },
+      },
     },
   });
   const temporalGroup = group("Temporal", [temporal, temporalUi]);
