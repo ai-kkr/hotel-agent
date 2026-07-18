@@ -37,8 +37,9 @@ class ToolRetryPolicy(BaseModel):
     - ``"transient"`` (default): retry on anything that is *not* a deterministic/logic error
       (``SelfCorrectionError``, ``ValueError``, ``TypeError``, …). Network blips get retried;
       precondition/logic failures surface immediately.
-    - ``"all"``: retry on every exception except ``SelfCorrectionError`` (which is handled by
-      :class:`SelfCorrectionMiddleware` and must never be retried).
+    - ``"all"``: retry on every exception except ``SelfCorrectionError`` (which is caught above the
+      generic handler by :func:`src.agent.middleware.run_tool_call` and turned into a corrective
+      ``ToolMessage``, so it must never be retried).
     """
 
     max_retries: int = Field(default=0, ge=0)
@@ -161,9 +162,10 @@ class Settings(BaseSettings):
     openrouter_reasoning_effort: str | None = "minimal"
 
     # --- Tool retry policy ---
-    # Per-tool retry behaviour, applied by :class:`ToolRetryMiddleware`. Defaults are conservative:
-    # the catch-all default does not retry, and each tool is given an explicit policy in
-    # ``config.yaml`` (sending tools never retry, network tools do).
+    # Per-tool retry behaviour, applied by :func:`src.agent.middleware.run_tool_call` (the tool-call
+    # wrapper inside the agent graph). Defaults are conservative: the catch-all default does not
+    # retry, and each tool is given an explicit policy in ``config.yaml`` (sending tools never retry,
+    # network tools do).
     tool_retry: ToolRetryConfig = Field(default_factory=ToolRetryConfig)
 
     # --- Outbound report delivery channel (v1 = email) ---

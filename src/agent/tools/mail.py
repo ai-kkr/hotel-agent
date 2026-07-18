@@ -18,7 +18,7 @@ from ..context import EmailContext
 from ..exceptions import SelfCorrectionError
 from ..prompts import SYSTEM_LETTER_TO_HOTEL
 from ..state import EmailState
-from ..types import MessageText
+from ..utils import send_telegram_reply
 from .booking import missing_booking_fields
 from .utils import ack
 
@@ -64,11 +64,10 @@ async def _compose_letter(state: EmailState, wishes: list[str]) -> str:
         config={
             "tags": [
                 # Suppress this internal LLM call from the graph's ``messages`` stream: otherwise
-                # its AIMessage (the composed letter body) inherits the graph callback config via
-                # contextvars and leaks into ``stream_graph``, which forwards it to Telegram.
-                # ``nostream`` is langgraph's TAG_NOSTREAM — on_chat_model_start skips runs tagged
-                # with it (langgraph/pregel/_messages.py). The result still comes back from
-                # ``ainvoke`` as usual; only streaming/observability is suppressed.
+                # its AIMessage (the composed letter body) leaks out as if it were a guest-facing
+                # agent reply. ``nostream`` is langgraph's TAG_NOSTREAM — on_chat_model_start skips
+                # runs tagged with it (langgraph/pregel/_messages.py). The result still comes back
+                # from ``ainvoke`` as usual; only streaming/observability is suppressed.
                 "nostream",
             ]
         },
@@ -177,7 +176,7 @@ async def send_wishes_to_hotel(
         f"Booking inquiry — {state.get('hotel_name') or ''}{ref_part} "
         f"({state.get('from_date') or '?'}…{state.get('to_date') or '?'})"
     )
-    runtime.stream_writer(MessageText(text="Отправляю письмо в отель…"))
+    await send_telegram_reply("Отправляю письмо в отель…")
     message_id = await _send_and_persist(
         runtime,
         to=_resolve_recipient(runtime),
@@ -186,7 +185,7 @@ async def send_wishes_to_hotel(
         headers=None,
         in_reply_to=None,
     )
-    runtime.stream_writer(MessageText(text="Письмо отелю отправлено. Жду ответ."))
+    await send_telegram_reply("Письмо отелю отправлено. Жду ответ.")
     return Command(
         update={
             "user_wishes": wishes,
@@ -232,7 +231,7 @@ async def reply_to_hotel(
     log.info("tool.reply_to_hotel", in_reply_to=hotel_message_id)
     subject = "Re: " + (state.get("last_hotel_subject") or "")
     headers = {"In-Reply-To": hotel_message_id, "References": hotel_message_id}
-    runtime.stream_writer(MessageText(text="Отправляю ответ отелю…"))
+    await send_telegram_reply("Отправляю ответ отелю…")
     message_id = await _send_and_persist(
         runtime,
         to=_resolve_recipient(runtime),

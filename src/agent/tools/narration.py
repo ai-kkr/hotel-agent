@@ -9,6 +9,7 @@ from src.logging import get_logger
 from ..context import EmailContext
 from ..state import EmailState
 from ..types import MessageText
+from ..utils import send_telegram_reply
 from .utils import ack
 
 __all__ = ["cancel_task", "inform_step"]
@@ -27,7 +28,7 @@ async def inform_step(step: str, runtime: ToolRuntime[EmailContext, EmailState])
         step: A short description of the current step.
     """
     log.info("tool.inform_step", step=step)
-    runtime.stream_writer(MessageText(text=step))
+    await send_telegram_reply(step)
     return Command(update={"messages": [ack(runtime)]})
 
 

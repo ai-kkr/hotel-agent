@@ -1,6 +1,11 @@
 # Local development stack for kkr-hotel-assist.
 # Brings up the dependencies the app needs to run locally — no Mailgun (the app uses the stub mail
-# provider in local mode). Start with:  docker compose up
+# provider in local mode).
+#
+# The `app` service is profile-gated, so a bare up brings up ONLY the dependencies
+# (postgres, temporal + ui, langfuse) — run the app itself locally with `uv run`:
+#   docker compose up -d                              # dependencies only
+#   docker compose --profile app up -d --build        # also build & start the containerised app
 # Tear down (incl. data volumes):  docker compose down -v
 #
 # Service ports mirror the defaults in src.config.Settings:
@@ -12,13 +17,16 @@
 services:
   # ===========================================================================
   # app — само приложение (FastAPI + uvicorn + Telegram polling в lifespan).
-  # Сборка из Dockerfile в корне репозитория. Запуск:
-  #   docker compose up -d --build postgres app        # минимум
-  #   docker compose up -d --build                      # весь стек (вкл. Langfuse)
+  # Сборка из Dockerfile в корне репозитория. Profile-gated (см. шапку): не стартует
+  # при обычном `docker compose up`, только с `--profile app`.
   # .env подгружается через env_file; DSN-override ниже переподставляют хосты
   # localhost → имена compose-сервисов (env-переменные бьют над .env в pydantic-settings).
   # ===========================================================================
   app:
+    # Profile-gated: a bare `docker compose up -d` brings up only the dependencies
+    # (postgres, temporal + ui, langfuse) for running the app locally with `uv run`.
+    # Add `--profile app` to also start the containerised app.
+    profiles: ["app"]
     build: .
     image: kkr-hotel-assist:latest
     restart: unless-stopped
@@ -29,7 +37,7 @@ services:
       KKR_LANGGRAPH_DSN: postgresql://postgres:postgres@postgres:5432/kkr
       KKR_LANGFUSE_HOST: http://langfuse-web:3000
     ports:
-      - "8019:8000"   # Mailtrap inbound-webhook: http://<host>:8019/send_test_email
+      - "8019:8000" # Mailtrap inbound-webhook: http://<host>:8019/send_test_email
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,7 +55,7 @@ services:
     volumes:
       - kkr_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d kkr"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d kkr" ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -148,7 +156,7 @@ services:
     restart: always
     depends_on: *langfuse-depends-on
     ports:
-      - "8018:3000"   # Langfuse UI: http://<host>:8018
+      - "8018:3000" # Langfuse UI: http://<host>:8018
     environment:
       <<: *langfuse-worker-env
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-mysecret}
@@ -178,7 +186,7 @@ services:
     volumes:
       - langfuse_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 3s
       timeout: 3s
       retries: 10
@@ -222,7 +230,7 @@ services:
     volumes:
       - langfuse_minio_data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: [ "CMD", "mc", "ready", "local" ]
       interval: 1s
       timeout: 5s
       retries: 5
@@ -232,14 +240,13 @@ services:
     image: docker.io/redis:7
     restart: always
     command: >
-      --requirepass ${LANGFUSE_REDIS_AUTH:-myredissecret}
-      --maxmemory-policy noeviction
+      --requirepass ${LANGFUSE_REDIS_AUTH:-myredissecret} --maxmemory-policy noeviction
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - langfuse_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 3s
       timeout: 10s
       retries: 10

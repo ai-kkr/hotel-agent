@@ -22,14 +22,15 @@
 
 ## Архитектура
 
-Единый пакет [`src/`](src/), всё на async (FastAPI + aiogram + LangGraph + SQLAlchemy/asyncpg).
+Единый пакет [`src/`](src/), всё на async (FastAPI + aiogram + Temporal + LangGraph + SQLAlchemy/asyncpg).
 
 | Слой | Назначение |
 |------|-----------|
 | [`src/bot`](src/bot) | Telegram-бот (aiogram): приём сообщений, маршрутизация в агента |
-| [`src/agent`](src/agent) | LLM-агент (LangGraph `create_agent`): state, tools, middleware, стриминг ответов |
-| [`src/app`](src/app) | FastAPI-приложение: webhook Mailtrap, зависимости, lifespan |
-| [`src/db`](src/db) | SQLAlchemy-модели и репозитории (клиенты, пересланные письма, отправленные письма) |
+| [`src/agent`](src/agent) | LLM-агент (LangGraph `StateGraph`, узлы бегут как Temporal-активности): state, tools, retry/self-correction, доставка ответов |
+| [`src/temporal`](src/temporal) | Оркестрация хода агента в Temporal: очередь per-thread, воркфлоу хода, активности load/save_state, data-converter |
+| [`src/app`](src/app) | FastAPI-приложение: webhook Mailtrap, зависимости, lifespan (бот + Temporal-воркер) |
+| [`src/db`](src/db) | SQLAlchemy-модели и репозитории (клиенты, пересланные/отправленные письма, состояние агента) |
 | [`src/integrations/mailtrap`](src/integrations/mailtrap) | Mailtrap-клиент (отправка + inbound) и vendored OpenAPI-клиенты |
 | [`src/config.py`](src/config.py) · [`src/logging.py`](src/logging.py) · [`src/llm.py`](src/llm.py) | настройки (pydantic-settings), structlog-логирование, сборка chat-модели |
 

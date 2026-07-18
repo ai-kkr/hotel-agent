@@ -18,10 +18,12 @@ email отеля, составляет и отправляет письмо на
 - **Отмена** — `cancel_task` с понятной причиной, если продолжать невозможно (например, не
   удалось найти email отеля).
 
-Агент реализован одним ReAct-графом через [`langchain.agents.create_agent`](../src/agent/agent.py)
-(узлы `model` + `tools`, state-схема `EmailState`, контекст `EmailContext`, middleware
-`SelfCorrectionMiddleware`). История переписки привязана к клиенту через
-`ClientORM.thread_id` (`client:{id:04d}`).
+Агент реализован одним ReAct-графом на рукописном `langgraph.graph.StateGraph`
+([`src/agent/agent.py`](../src/agent/agent.py), узлы `model` + `tools`, state-схема `EmailState`,
+контекст `EmailContext`). Граф исполняется Temporal LangGraph-плагином: каждый узел бежёт как
+активность (см. [architecture.md](architecture.md#temporal--srctemporal)). История переписки
+привязана к клиенту через `ClientORM.thread_id` (`client:{id:04d}`); ход ставится в очередь через
+`agent_step` ([`src/temporal/client.py`](../src/temporal/client.py)).
 
 ## Языковая политика
 
@@ -95,25 +97,27 @@ email отеля, составляет и отправляет письмо на
   только внутри `send_wishes_to_hotel`). Определяет структуру письма, языковые правила и
   «дисциплину вывода»: только тело письма, без темы, без markdown, без выдуманных фактов.
 
-## Самокоррекция
+## Самокоррекция и retry тул
 
 Тулы поднимают `SelfCorrectionError`, когда агент нарушил предусловие (отправляет письмо без
-полной брони, отвечает отелю, не получив его письма). [`SelfCorrectionMiddleware`](../src/agent/middleware.py)
-перехватывает такое исключение и превращает его в `ToolMessage`-подсказку — агент видит её на
-следующем ходу и исправляется, а не роняет граф.
+полной брони, отвечает отелю, не получив его письма). Обёртка вызова тул `run_tool_call`
+([`src/agent/middleware.py`](../src/agent/middleware.py), вызывается из `_tool_wrapper` в
+[`src/agent/agent.py`](../src/agent/agent.py)) перехватывает такое исключение и превращает его в
+`ToolMessage`-подсказку — агент видит её на следующем ходу и исправляется, а не роняет граф. Та же
+обёртка применяет per-tool retry-политику (см. [architecture.md](architecture.md)): транзиентные
+сбои (сеть, 5xx провайдера) повторяются с backoff, mail-тулы не повторяются никогда (чтобы не
+отправить письмо дважды), детерминированные ошибки (`ValueError`/`TypeError`/…) прокидываются.
 
-## Стриминг ответов — `stream_graph`
+## Доставка ответов
 
-[`src/agent/stream.py`](../src/agent/stream.py) на один ход агента:
+Ход агента бежит асинхронно в Temporal (см. [architecture.md](architecture.md#temporal--srctemporal)),
+поэтому ответ не стримится, а отправляется по готовности:
 
-- определяет, не стоит ли граф на `interrupt` (тогда возобновляет `Command(resume=msg)`), иначе
-  начинает новый ход;
-- всё время работы держит статус «печатает…» (через `asynccontextmanager`, пере-триггерясь каждые
-  ~4 с);
-- стримит `custom`-сообщения (narration тулов) сразу в чат;
-- накапливает чанки `AIMessage` по `message.id` и отправляет каждое итоговое сообщение целиком;
-  при этом контент `AIMessage` **с tool-call подавляется** — это внутренняя «мысль»/черновик
-  агента (например, текст письма отелю, который он набросал перед вызовом тулы), гостю он не
-  нужен; наррация идёт через `inform_step` и прогресс самих тул;
-- перед отправкой конвертирует Markdown → Telegram entities и подставляет `$user_inbox`
-  (обёрнутый в inline-code, чтобы ящик копировался одним тапом — см. [architecture.md](architecture.md#подстановка-user_inbox)).
+- нода `model` после `model.ainvoke` шлёт итоговый `AIMessage.content` в чат через
+  `send_telegram_reply` ([`src/agent/utils.py`](../src/agent/utils.py)) — с подстановкой
+  `$user_inbox` и HTML-рендером (см. [architecture.md](architecture.md#подстановка-user_inbox));
+- индикатор «печатает…» держится **поузельно** (`model_node`/`tool_node`), не workflow-wide, чтобы
+  не конфликтовать с собственными отправками агента (каждая отправка сбрасывает индикатор) —
+  см. [`src/agent/helpers/telegram.py`](../src/agent/helpers/telegram.py);
+- наррация прогресса идёт через тул `inform_step` (одно сообщение на значимый этап), а не через
+  стриминг.

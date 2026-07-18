@@ -3,9 +3,9 @@ from email.utils import parseaddr
 import fastapi
 from aiogram.utils.text_decorations import html_decoration
 from fastapi import APIRouter
-from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import HumanMessage
 
-from src.agent.stream import send_formatted, stream_graph
+from src.bot.utils import send_formatted
 from src.context import AppContext
 from src.db.models import ClientORM
 from src.db.repositories import ClientRepository, DuplicateForwardedEmailError
@@ -14,6 +14,7 @@ from src.integrations.mailtrap.webhooks import (
     InboundWebhookPayload,
 )
 from src.logging import get_logger
+from src.temporal.client import agent_step
 
 from .dependencies import AppSession, verify_mailtrap_signature
 
@@ -106,9 +107,9 @@ async def send_test_email(
                 ),
             )
         background_tasks.add_task(
-            stream_graph,
+            agent_step,
+            update={"messages": [HumanMessage(content=f"forwarded email:\n{email.data.text_body}")]},
             client=client,
-            msg=f"forwarded email:\n{email.data.text_body}",
         )
 
 
@@ -120,29 +121,15 @@ async def _handle_hotel_reply(
 ) -> None:
     """Feed a hotel reply back into the agent as a ``hotel reply:`` turn.
 
-    Records the hotel email's Message-ID and subject in the agent state (so ``reply_to_hotel``
-    can thread the next reply), then drives the agent turn with the reply body.
+    The hotel email's Message-ID and subject are passed as a ``state_update`` merge (applied inside
+    the workflow before the turn) so ``reply_to_hotel`` can thread the next reply, then the reply
+    body drives the agent turn.
     """
     lg.info(
         "Received hotel reply",
         client_id=client.id,
         message_id=msg.message_id,
         in_reply_to=msg.in_reply_to,
-    )
-    config = RunnableConfig(configurable={"thread_id": client.thread_id})
-    lg.info(
-        "hotel_reply.inject_state",
-        thread_id=client.thread_id,
-        message_id=msg.message_id,
-        subject=msg.subject,
-        in_reply_to=msg.in_reply_to,
-    )
-    await ctx.email_graph_or_raise().aupdate_state(
-        config,
-        {
-            "last_hotel_message_id": msg.message_id,
-            "last_hotel_subject": msg.subject,
-        },
     )
     if client.telegram_id is not None:
         await send_formatted(
@@ -156,9 +143,13 @@ async def _handle_hotel_reply(
         )
     body = msg.text_body or msg.html_body or ""
     background_tasks.add_task(
-        stream_graph,
+        agent_step,
+        update={"messages": [HumanMessage(content=f"hotel reply:\n{body}")]},
         client=client,
-        msg=f"hotel reply:\n{body}",
+        state_update={
+            "last_hotel_message_id": msg.message_id,
+            "last_hotel_subject": msg.subject,
+        },
     )
 
 
@@ -196,31 +187,32 @@ async def _apply_client_email(
     ctx: AppContext,
     msg: MessageDetails,
 ):
-    if client.email is None:
-        parsed_email = extract_email(msg.from_)
-        if parsed_email is None:
-            return
-        owner = await client_repo.get_client_by_email(parsed_email)
-        if owner is not None and owner.id != client.id:
-            lg.warning(
-                "Email already used by another client",
-                client_id=client.id,
-                email=parsed_email,
-                owner_id=owner.id,
+    if client.email is not None:
+        return
+    parsed_email = extract_email(msg.from_)
+    if parsed_email is None:
+        return
+    owner = await client_repo.get_client_by_email(parsed_email)
+    if owner is not None and owner.id != client.id:
+        lg.warning(
+            "Email already used by another client",
+            client_id=client.id,
+            email=parsed_email,
+            owner_id=owner.id,
+        )
+        if client.telegram_id is not None:
+            await ctx.bot.send_message(
+                chat_id=client.telegram_id,
+                text=(
+                    "Не смог привязать email "
+                    f"{html_decoration.quote(parsed_email)} — пользователь с таким адресом"
+                    " уже зарегистрирован."
+                ),
             )
-            if client.telegram_id is not None:
-                await ctx.bot.send_message(
-                    chat_id=client.telegram_id,
-                    text=(
-                        "Не смог привязать email "
-                        f"{html_decoration.quote(parsed_email)} — пользователь с таким адресом"
-                        " уже зарегистрирован."
-                    ),
-                )
-        else:
-            client.email = parsed_email
-            lg.info(
-                "Stored client email from inbound message",
-                client_id=client.id,
-                email=parsed_email,
-            )
+    else:
+        client.email = parsed_email
+        lg.info(
+            "Stored client email from inbound message",
+            client_id=client.id,
+            email=parsed_email,
+        )

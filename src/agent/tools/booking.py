@@ -11,6 +11,7 @@ from src.logging import get_logger
 from ..context import EmailContext
 from ..state import EmailState
 from ..types import MessageText
+from ..utils import send_telegram_reply
 from .utils import ack
 
 __all__ = ["REQUIRED_BOOKING_FIELDS", "missing_booking_fields", "set_booking_info"]
@@ -138,7 +139,7 @@ async def set_booking_info(
         hotel_language=hotel_language,
     )
     if summary is not None:
-        runtime.stream_writer(summary)
+        await send_telegram_reply(summary.text)
     return Command(
         update={
             "hotel_name": hotel_name,

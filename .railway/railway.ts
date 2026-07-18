@@ -1,10 +1,10 @@
 // Railway Infrastructure as Code — kkr-hotel-assist.
 //
 // Минималистичная прод-топология: приложение (GitHub-источник ai-kkr/hotel-agent) +
-// общая managed Postgres. Langfuse пока используется облачный (KKR_LANGFUSE_HOST →
-// cloud.langfuse.com); self-host-стек (web/worker/clickhouse/redis/bucket) сознательно
-// опущен — его можно поднять локально через docker-compose позже. Temporal включён
-// заглушкой (закомментирован) — раскомментировать, когда понадобятся воркфлоу.
+// общая managed Postgres + Temporal (server + UI, воркфлоу-рантайм агента). Langfuse
+// используется облачный (KKR_LANGFUSE_HOST → cloud.langfuse.com); self-host-стек
+// (web/worker/clickhouse/redis/bucket) сознательно опущен — его можно поднять локально
+// через docker-compose позже.
 //
 // Что IaC описывает, а что нет — см. .railway/README.md. Кратко:
 //  - DSL держит литералы и прямые ссылки (db.env.DATABASE_URL).
@@ -16,6 +16,7 @@ import {
   defineRailway,
   github,
   group,
+  image,
   postgres,
   preserve,
   project,
@@ -24,8 +25,8 @@ import {
 
 export default defineRailway((_ctx) => {
   // ── Общая managed Postgres ────────────────────────────────────────────────
-  // Один сервер на проект. Приложение (ORM + alembic) и langgraph-чекпойнтер
-  // используют БД по умолчанию; temporal (когда включим) — свои БД на этом сервере.
+  // Один сервер на проект. Приложение (ORM + alembic + states) использует БД по
+  // умолчанию; temporal — свои БД (temporal / temporal_visibility) на этом сервере.
   const db = postgres("postgres");
 
   // ── App: код из GitHub (автодеплой по push в master) ──────────────────────
@@ -52,9 +53,9 @@ export default defineRailway((_ctx) => {
       KKR_IS_DEV: "false",
       KKR_LANGFUSE_ENABLED: "true",
       KKR_LANGFUSE_HOST: "https://cloud.langfuse.com", // облачный Langfuse
-      // Чекпойнтер langgraph: обычный postgresql://, дефолтная БД — прямая ссылка.
-      KKR_LANGGRAPH_DSN: db.env.DATABASE_URL,
-      // ORM/alembic: тот же сервер/БД, но с драйвером +asyncpg — не выводится из
+      // Temporal: приватный домен сервиса temporal (см. ниже) + дефолтный порт.
+      KKR_TEMPORAL_TARGET: "temporal.railway.internal:7233",
+      // ORM/alembic/states: тот же сервер/БД, но с драйвером +asyncpg — не выводится из
       // DATABASE_URL, выставляется bootstrap-скриптом.
       KKR_POSTGRES_DSN: preserve(),
       // Langfuse Cloud: ключи проекта (из облачной консоли Langfuse).
@@ -77,37 +78,34 @@ export default defineRailway((_ctx) => {
     },
   });
 
-  // ── Temporal (stub — ЗАКОММЕНТИРОВАНО) ────────────────────────────────────
-  // Пока не используется. Чтобы включить: раскомментировать, прогнать bootstrap
-  // (POSTGRES_SEEDS → postgres, DBNAME/visibility), создать БД temporal и
-  // temporal_visibility в общей Postgres. См. .railway/README.md.
-  //
-  // const temporal = service("temporal", {
-  //   source: image("temporalio/auto-setup:1.24.2"),
-  //   env: {
-  //     DB: "postgres12",
-  //     DB_PORT: "5432",
-  //     POSTGRES_USER: preserve(),
-  //     POSTGRES_PWD: preserve(),
-  //     POSTGRES_SEEDS: "postgres.railway.internal", // private domain общей Postgres
-  //     DBNAME: "temporal",
-  //     VISIBILITY_DBNAME: "temporal_visibility",
-  //   },
-  // });
-  // const temporalUi = service("temporal-ui", {
-  //   source: image("temporalio/ui:2.45.2"),
-  //   env: {
-  //     TEMPORAL_ADDRESS: "temporal.railway.internal:7233",
-  //   },
-  // });
-  // const temporalGroup = group("Temporal", [temporal, temporalUi]);
+  // ── Temporal (server + UI) ────────────────────────────────────────────────
+  // Воркфлоу-рантайм для агента. `auto-setup` сам создаёт БД temporal /
+  // temporal_visibility и применяет схемы на общей Postgres при старте (нужен
+  // CREATEDB — у юзера managed-Postgres он есть). Креды берём прямо из сервиса
+  // postgres (db.env.*), без bootstrap. UI ходит на приватный домен сервера.
+  const temporal = service("temporal", {
+    source: image("temporalio/auto-setup:1.24.2"),
+    env: {
+      DB: "postgres12",
+      DB_PORT: "5432",
+      POSTGRES_USER: db.env.POSTGRES_USER,
+      POSTGRES_PWD: db.env.POSTGRES_PASSWORD,
+      POSTGRES_SEEDS: "postgres.railway.internal", // private domain общей Postgres
+      DBNAME: "temporal",
+      VISIBILITY_DBNAME: "temporal_visibility",
+    },
+  });
+  const temporalUi = service("temporal-ui", {
+    source: image("temporalio/ui:2.45.2"),
+    env: {
+      TEMPORAL_ADDRESS: "temporal.railway.internal:7233",
+    },
+  });
+  const temporalGroup = group("Temporal", [temporal, temporalUi]);
 
   const appGroup = group("App", [db, app]);
 
   return project("kkr-hotel", {
-    resources: [
-      appGroup,
-      // temporalGroup,
-    ],
+    resources: [appGroup, temporalGroup],
   });
 });

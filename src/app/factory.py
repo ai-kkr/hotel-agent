@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager, suppress
 import fastapi
 
 from src.bot.app import run_bot
-from src.context import AppContext, get_context, init_graph, set_context
+from src.context import AppContext, get_context, set_context
+from src.temporal.worker import run_worker
 
 from . import webhook
 
@@ -20,11 +21,8 @@ async def lifespan_event_handler(app: fastapi.FastAPI):
     connections.
     """
     ctx: AppContext = get_context()
-    # Open the checkpointer pool, apply langgraph's checkpoint_* schema (idempotent — its own
-    # migrations, NOT alembic), and compile the agent graph. ``AsyncPostgresSaver`` binds to the
-    # running loop, so this must happen here in the lifespan, not in sync ``build_context``.
-    await init_graph(ctx)
-    bot_task = asyncio.create_task(run_bot(ctx.bot))
+    bot_task = asyncio.create_task(run_bot())
+    worker, worker_task = await run_worker()
     try:
         yield
     finally:
@@ -35,7 +33,10 @@ async def lifespan_event_handler(app: fastapi.FastAPI):
             bot_task.cancel()
             await bot_task
         await ctx.bot.session.close()
-        await ctx.checkpoint_pool.close()
+        await worker.shutdown()
+        with suppress(asyncio.CancelledError):
+            worker_task.cancel()
+            await worker_task
         # Flush queued Langfuse events so no traces are lost on exit (no-op if never enabled).
         from src.agent.tracing import shutdown_langfuse
 

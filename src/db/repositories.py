@@ -3,11 +3,12 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agent.state import EmailState
 from src.context import AppContext, get_context
 from src.integrations.mailtrap.mailtrap_inbound.models import MessageDetails
 
 from .models import ClientORM as Client
-from .models import ForwardedEmailORM, OutboundEmailORM
+from .models import ForwardedEmailORM, OutboundEmailORM, StateORM
 
 
 class DuplicateForwardedEmailError(Exception):
@@ -100,3 +101,43 @@ class ClientRepository:
             select(OutboundEmailORM).filter(OutboundEmailORM.message_id == message_id)
         )
         return result.scalar_one_or_none()
+
+    async def get_state_by_client_id(self, client_id: int) -> EmailState | None:
+        """Return the persisted agent state for a client, or ``None`` if none is stored yet.
+
+        The ``state`` column is native JSON (``JSONB`` on Postgres), so SQLAlchemy already parses it
+        into a plain ``dict`` — no manual deserialization here.
+        """
+        result = await self.db_session.execute(
+            select(StateORM.state).filter(StateORM.client_id == client_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def set_state_by_client_id(self, client_id: int, state: EmailState) -> None:
+        """Persist the agent state for a client, inserting or replacing the single row.
+
+        ``client_id`` is the primary key of ``states``, so this is an upsert. Load-or-create keeps
+        it dialect-agnostic (works on SQLite for tests); ``updated_at`` refreshes automatically via
+        the column's ``onupdate``.
+        """
+        result = await self.db_session.execute(
+            select(StateORM).filter(StateORM.client_id == client_id)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            self.db_session.add(StateORM(client_id=client_id, state=state))
+        else:
+            row.state = state
+
+    async def delete_state_by_client_id(self, client_id: int) -> None:
+        """Delete the persisted agent state for a client, if any.
+
+        No-op when there is no row (e.g. the client never had a turn). The caller must commit the
+        session for the delete to take effect — same as the other mutating methods here.
+        """
+        result = await self.db_session.execute(
+            select(StateORM).filter(StateORM.client_id == client_id)
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            await self.db_session.delete(row)

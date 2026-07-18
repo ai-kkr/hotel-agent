@@ -4,14 +4,11 @@ Langfuse is self-hosted via docker compose (UI at ``KKR_LANGFUSE_HOST``). Tracin
 activates only when ``KKR_LANGFUSE_ENABLED=true`` AND both project keys are set, so local/test runs
 without the Langfuse stack stay clean.
 
-We use the Langfuse v3+ ``CallbackHandler`` — attached per agent turn via the LangChain
-``RunnableConfig``. Each agent turn becomes one trace. Trace attributes are passed through the
-config ``metadata`` (the keys the callback reads are prefixed ``langfuse_``):
-
-- ``langfuse_user_id``    — the client id (who the conversation is with).
-- ``langfuse_session_id`` — the per-client LangGraph thread id, so a guest's whole back-and-forth
-  groups into a single session in the Langfuse UI.
-- ``langfuse_tags``       — a tag distinguishing the entry point (``telegram``).
+The Langfuse v3+ ``CallbackHandler`` is attached per agent node inside the Temporal-wrapped graph
+(:func:`src.agent.agent._langfuse_handler`) via ``var_child_runnable_config``. Each turn becomes one
+trace (the trace id is derived from the workflow run id and shared by every node in the turn); trace
+attributes (``langfuse_user_id`` / ``langfuse_session_id``) are set on the config metadata by the
+workflow.
 
 The ``Langfuse`` client is a process-wide singleton; :func:`init_langfuse` configures it once at
 startup, :func:`shutdown_langfuse` flushes on shutdown.
@@ -19,10 +16,7 @@ startup, :func:`shutdown_langfuse` flushes on shutdown.
 
 from __future__ import annotations
 
-from langchain_core.runnables import RunnableConfig
-
 from src.config import Settings, get_settings
-from src.db.models import ClientORM
 from src.logging import get_logger
 
 log = get_logger(__name__)
@@ -66,35 +60,6 @@ def shutdown_langfuse() -> None:
 
     get_client().flush()
     _initialized = False
-
-
-def with_tracing(
-    base: RunnableConfig,
-    client: ClientORM,
-    *,
-    settings: Settings | None = None,
-) -> RunnableConfig:
-    """Return ``base`` enriched with a Langfuse callback + trace metadata, or unchanged.
-
-    Returns ``base`` as-is when tracing is disabled, so the call sites don't need their own guards.
-    """
-    settings = settings or get_settings()
-    if not _is_enabled(settings):
-        return base
-
-    from langfuse.langchain import CallbackHandler
-
-    handler = CallbackHandler()
-    metadata = dict(base.get("metadata") or {})
-    metadata.update(
-        {
-            "langfuse_user_id": str(client.id),
-            "langfuse_session_id": client.thread_id,
-        }
-    )
-    callbacks = list(base.get("callbacks") or [])  # ty:ignore[invalid-argument-type]
-    callbacks.append(handler)
-    return {**base, "callbacks": callbacks, "metadata": metadata}  # type: ignore[return-value]
 
 
 def _is_enabled(settings: Settings) -> bool:

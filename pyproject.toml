@@ -12,7 +12,7 @@ dependencies = [
     "greenlet>=3.0",
     "alembic>=1.13",
     "asyncpg>=0.29",
-    "temporalio>=1.7",
+    "temporalio[langgraph]>=1.7",
     "langgraph>=1",
     "langgraph-checkpoint-postgres>=2.0",
     "langchain>=1",
@@ -29,6 +29,7 @@ dependencies = [
     "tavily-python>=0.7.26",
     "mailtrap>=2.6.1",
     "pyyaml>=6",
+    "ag-ui-protocol>=0.1.19",
 ]
 
 [project.optional-dependencies]

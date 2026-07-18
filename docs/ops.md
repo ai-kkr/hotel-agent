@@ -90,10 +90,10 @@ Mailtrap присылает входящие письма на `POST /send_test_
 
 ## Локальный dev-стек
 
-[`docker-compose.yml`](../docker-compose.yml) поднимает зависимости. Для текущего кода обязателен
-только **postgres** (`docker compose up -d postgres`). Langfuse (трейсинг LLM) — опционален:
-интегрирован, но выключен до явного `KKR_LANGFUSE_ENABLED=true` + ключей. Temporal и его
-инфраструктура сохранены на будущее — текущий код их не использует.
+[`docker-compose.yml`](../docker-compose.yml) поднимает зависимости. Для запуска приложения
+локально нужны **postgres** и **temporal** (+ опционально `temporal-ui`):
+`docker compose up -d postgres temporal`. Langfuse (трейсинг LLM) — опционален: интегрирован, но
+выключен до явного `KKR_LANGFUSE_ENABLED=true` + ключей.
 
 ## Известные нюансы
 
@@ -102,15 +102,18 @@ Mailtrap присылает входящие письма на `POST /send_test_
 - **Пул asyncpg** — соединения защищены от «протухания» через `pool_pre_ping` + `pool_recycle`
   ([`src/db/session.py`](../src/db/session.py)). Без этого на простаивающих соединениях возможен
   `ConnectionDoesNotExistError` на `BEGIN`.
-- **Чекпоинтер агента** — `AsyncPostgresSaver` (Postgres, в [`src/context.py`](../src/context.py));
-  история переписки переживает рестарт процесса. Схема чекпоинта (таблицы `checkpoint_*`)
-  применяется в `lifespan` через `setup()` — это **собственные миграции LangGraph**, они не
-  относятся к alembic и не должны попадать в autogenerate. Сборщик (`AsyncPostgresSaver`) и граф
-  строятся в `init_graph()` внутри event-loop uvicorn: конструктор saver'а привязывается к
-  `asyncio.get_running_loop()`, а `build_context()` синхронный и до старта uvicorn лупа ещё нет.
+- **Состояние агента** — хранится в таблице `states` (`StateORM`), а не через LangGraph-чекпоинтер.
+  Каждый ход: `AgentWorkflow` грузит `EmailState` активити `load_state`, гоняет граф с
+  in-поворотным `InMemorySaver`, сохраняет результат активити `save_state`
+  ([`src/temporal/activities.py`](../src/temporal/activities.py)). История переписки переживает
+  рестарт процесса. Таблица `states` — обычная ORM-модель, управляется alembic
+  (`20260717_1430_7c8d9e0f1a2b_add_states.py`); `checkpoint_*` таблиц (и `AsyncPostgresSaver`) больше
+  нет. `/new` сбрасывает контекст удалением строки (`delete_state_by_client_id`).
 - **Langfuse (опционально)** — трейсинг LLM. Включается `KKR_LANGFUSE_ENABLED=true` + обоими
   ключами (`KKR_LANGFUSE_PUBLIC_KEY`/`KKR_LANGFUSE_SECRET_KEY`, берутся из `LANGFUSE_INIT_PROJECT_*`
   в compose). Один агент-оборот = один трейс; `session_id` = per-client thread (вся переписка гостя
-  группируется в сессию), `user_id` = id клиента. Callback навешивается в
-  [`src/agent/stream.py`](../src/agent/stream.py) через `RunnableConfig`; client/saver/flush —
-  в [`src/agent/tracing.py`](../src/agent/tracing.py). Без включения — no-op.
+  группируется в сессию), `user_id` = id клиента, `trace_id` детерминированно выводится из
+  `workflow.info().run_id` (стабилен при replay). Callback навешивается **поузельно** через
+  [`src/agent/helpers/langfuse.py`](../src/agent/helpers/langfuse.py) (`var_child_runnable_config`);
+  init/shutdown клиента — в [`src/agent/tracing.py`](../src/agent/tracing.py) (инициализируется в
+  Temporal-воркере, flush — в lifespan). Без включения — no-op.

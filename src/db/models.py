@@ -1,13 +1,14 @@
 from datetime import datetime
 
 from sqlalchemy import ForeignKey, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
+from src.agent.state import EmailState
 from src.integrations.mailtrap.mailtrap_inbound.models import MessageDetails
 
 from .base import Base
-from .types import MessageDetailsType
+from .types import MessageDetailsType, StateType
 
 
 class ClientORM(Base):
@@ -88,3 +89,29 @@ class OutboundEmailORM(Base):
     subject: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     in_reply_to: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class StateORM(Base):
+    """Persisted agent state for a client.
+
+    One row per client (``client_id`` is the primary key). The ``state`` column holds the
+    serialized :class:`EmailState` as native JSON — ``JSONB`` on Postgres (binary, indexable, no
+    duplicate keys), falling back to plain ``JSON`` on SQLite (tests). ``created_at``/``updated_at``
+    track when the row was first written and last refreshed.
+    """
+
+    __tablename__ = "states"
+    client_id: Mapped[int] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    client: Mapped[ClientORM] = relationship("ClientORM", backref="state", uselist=False)
+    state: Mapped[EmailState] = mapped_column(
+        StateType,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

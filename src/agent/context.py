@@ -11,7 +11,7 @@ from typing import TypedDict
 __all__ = ["EmailContext"]
 
 
-class EmailContext(TypedDict):
+class EmailContext(TypedDict, total=False):
     #: Verified Mailtrap sending address used as ``From`` (must be on a verified sending domain).
     from_email: str | None
     #: Client's inbound inbox address; set as ``Reply-To`` so hotel replies land back in the
@@ -22,3 +22,4 @@ class EmailContext(TypedDict):
     #: Client id, to bind the sent email record (``outbound_emails``) for reply matching.
     client_id: int | None
     model_name: str | None
+    telegram_id: int | None
