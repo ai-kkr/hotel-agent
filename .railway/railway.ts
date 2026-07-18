@@ -113,12 +113,29 @@ export default defineRailway((_ctx) => {
       limitOverride: {
         containers: {
           cpu: 0.1, // 0.1 vCPU
-          memoryBytes: 52428800, // 50 MiB — очень тесно для Node; поднять, если OOM
+          memoryBytes: 52428800, // 50 MiB — temporal-ui это Go (Echo), укладывается
         },
       },
     },
   });
-  const temporalGroup = group("Temporal", [temporal, temporalUi]);
+  // temporal-ui не умеет простой basic-auth (только OIDC), поэтому перед ним — тонкий
+  // Caddy-прокси с HTTP Basic Auth. Прокси собирается из репо (infra/temporal-ui-proxy/),
+  // где Dockerfile COPY'ит зафиксированный Caddyfile в дефолтный путь образа caddy — никаких
+  // startCommand/entrypoint-коллизий. Публичный Railway-домен навешивается на ПРОКСИ, сам
+  // temporal-ui остаётся только внутренним. Пароль меняется перегенерацией bcrypt-хэша в
+  // infra/temporal-ui-proxy/Caddyfile (см. комментарий там).
+  const temporalUiProxy = service("temporal-ui-proxy", {
+    source: github("ai-kkr/hotel-agent", { rootDirectory: "infra/temporal-ui-proxy" }),
+    deploy: {
+      limitOverride: {
+        containers: {
+          cpu: 0.1, // 0.1 vCPU
+          memoryBytes: 67108864, // 64 MiB — Caddy (Go) idle ~20–30 MiB
+        },
+      },
+    },
+  });
+  const temporalGroup = group("Temporal", [temporal, temporalUi, temporalUiProxy]);
 
   const appGroup = group("App", [db, app]);
 

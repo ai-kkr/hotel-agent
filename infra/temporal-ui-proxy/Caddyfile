@@ -1,0 +1,14 @@
+# Caddy reverse-proxy in front of temporal-ui with HTTP Basic Auth.
+# temporal-ui itself has no built-in basic auth (OIDC only), so this proxy gates it.
+# The proxy is the only public surface (Railway service domain); temporal-ui stays internal.
+#
+# Listen on 8080 (the port the Railway domain targets). reverse_proxy to the internal UI.
+# To change the password: regenerate a bcrypt hash
+#   `docker run --rm -it caddy caddy hash-password --plaintext '<pw>'`
+# or `htpasswd -nbBC 10 admin '<pw>'`, then replace the hash line below and redeploy.
+:8080 {
+	basic_auth {
+		admin $2y$10$uXq.ErtS/qCgJEwRjmMH8.nZre0RnF6YX9waVGfbA2KnefZp90z7a
+	}
+	reverse_proxy temporal-ui.railway.internal:8080
+}
