@@ -10,8 +10,10 @@
   `postgres`. Деплой — `railway up --service app` (GitHub-автодеплой не срабатывает, см. ниже).
 - **Langfuse** — **облачный** (`KKR_LANGFUSE_HOST=https://cloud.langfuse.com`); self-host
   не поднимаем (дорого), при желании гоняем локально через `docker-compose`.
-- **Temporal** — включён (server `temporalio/auto-setup` + UI); сервер сам создаёт БД
-  `temporal`/`temporal_visibility` на общей Postgres, креды берёт из сервиса `postgres`.
+- **Temporal** — включён (server `temporalio/auto-setup` + UI + `temporal-ui-proxy`). Сервер сам
+  создаёт БД `temporal`/`temporal_visibility` на общей Postgres, креды берёт из сервиса `postgres`.
+  UI доступен снаружи только через прокси с HTTP Basic Auth (`infra/temporal-ui-proxy/`, Caddy);
+  сам temporal-ui внутренний.
 
 ## Три слоя конфигурации
 
