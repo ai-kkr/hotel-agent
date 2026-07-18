@@ -39,9 +39,14 @@ uv run alembic check                      # detect model/DB drift
 uv run alembic revision -m "..."          # autogen a migration
 ```
 
-**Production deploys to Railway as IaC** — topology in `.railway/railway.ts` (managed `postgres` +
-`app` from `github("ai-kkr/hotel-agent")`, cloud Langfuse, Temporal commented out). Push to `master`
-auto-deploys `app`; `railway up --service app` deploys the local tree to the same service. The
+**Production deploys to Railway as IaC** — topology in `.railway/railway.ts` (managed `postgres`,
+`temporal` + `temporal-ui`, and `app` from `github("ai-kkr/hotel-agent")`, cloud Langfuse). The
+canonical/deploy branch is **`main`** — always push there (not `master`). **GitHub auto-deploy does
+NOT currently fire** (the Railway GitHub-App webhook isn't active), so a push alone does not deploy.
+To deploy, run **`railway up --service app --detach -m "..."`** — it uploads the local working tree
+and builds server-side (the image is identical regardless of branch, since the Dockerfile copies
+`src/`/`alembic/`/`main.py` only). Then poll
+`railway deployment list --service app --json` to terminal `SUCCESS` before calling it done. The
 DSL can't compose strings, so `KKR_POSTGRES_DSN` (+asyncpg) and all secrets are set by
 `scripts/railway-bootstrap.sh` and declared `preserve()` in `railway.ts`. `railway config plan` /
 `apply` need `RAILWAY_IAC_TS_BIN="$PWD/.railway/node_modules/.bin/railway-iac-ts"` (TS runner SDK

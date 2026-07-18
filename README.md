@@ -64,11 +64,11 @@ uv run python main.py                     # запуск приложения (F
 ## Деплой
 
 Продакшен — **Railway**, инфраструктура как код (`.railway/railway.ts`): сервис `app` (собирается
-из корневого `Dockerfile`, источник — GitHub `ai-kkr/hotel-agent`) + managed Postgres; Langfuse
-облачный, Temporal пока отключён. Push в `master` авто-деплоит `app`; `railway up` деплоит
-локальное дерево. Переменные, требующие композиции (`KKR_POSTGRES_DSN` с `+asyncpg`), и все
-секреты выставляются через `scripts/railway-bootstrap.sh`. Подробно — в
-[docs/deployment.md](docs/deployment.md).
+из корневого `Dockerfile`, источник — GitHub `ai-kkr/hotel-agent`) + managed Postgres + Temporal
+(server + UI); Langfuse облачный. Деплой-ветка — **`main`** (всегда пушьте туда), но GitHub-автодеплой
+не срабатывает — деплой через `railway up --service app`. Переменные, требующие композиции
+(`KKR_POSTGRES_DSN` с `+asyncpg`), и все секреты выставляются через `scripts/railway-bootstrap.sh`.
+Подробно — в [docs/deployment.md](docs/deployment.md).
 
 > Один bot-token может опрашиваться только одним процессом: локальный/NAS-инстанс и Railway
 > нельзя запускать одновременно.

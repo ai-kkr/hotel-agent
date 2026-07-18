@@ -6,11 +6,12 @@
 
 Минималистичный прод (на время тестов):
 
-- **App** — `app` (GitHub-источник `ai-kkr/hotel-agent`, автодеплой по push в `master`) +
-  общая managed `postgres`.
+- **App** — `app` (GitHub-источник `ai-kkr/hotel-agent`, ветка **`main`**) + общая managed
+  `postgres`. Деплой — `railway up --service app` (GitHub-автодеплой не срабатывает, см. ниже).
 - **Langfuse** — **облачный** (`KKR_LANGFUSE_HOST=https://cloud.langfuse.com`); self-host
   не поднимаем (дорого), при желании гоняем локально через `docker-compose`.
-- **Temporal** — закомментирован (заглушка).
+- **Temporal** — включён (server `temporalio/auto-setup` + UI); сервер сам создаёт БД
+  `temporal`/`temporal_visibility` на общей Postgres, креды берёт из сервиса `postgres`.
 
 ## Три слоя конфигурации
 
@@ -76,8 +77,9 @@ railway logs --service app --lines 100
 
 ## Дальнейшие деплои
 
-- **Авто** — push в `master` → сборка `app`.
-- **Вручную** — `railway up -m "..."` из корня репо в тот же сервис.
+- **Деплой** — `railway up --service app --detach -m "…"` (грузит локальное дерево, билдит на
+  сервере). GitHub-автодеплой **не срабатывает** — push в `main` сам по себе не деплоит; всегда
+  запускайте `railway up`. Деплой-ветка для коммитов — `main`.
 - **Топология** — правь `railway.ts` → `railway config plan` → `railway config apply`.
 
 ## Включение Temporal
