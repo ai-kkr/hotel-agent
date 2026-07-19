@@ -60,6 +60,15 @@ two contours are isolated.) DB schema migrations run automatically on deploy —
 (`scripts/docker-entrypoint.sh`) runs `alembic upgrade head` before `python main.py`, so a new
 migration ships just by deploying.
 
+**Railway auth (CLI 5.x): use `railway login`, NOT a `RAILWAY_TOKEN` env var.** The Railway CLI is
+OAuth-only — it does NOT honor `RAILWAY_TOKEN`/`RAILWAY_API_TOKEN` for `railway up`/`login`, and if
+either is set it **poisons every command** (even `railway login` fails with "Invalid RAILWAY_TOKEN").
+So: do NOT put these in `.claude/settings.local.json` env. Authenticate once with
+`env -u RAILWAY_TOKEN -u RAILWAY_API_TOKEN railway login` (opens a browser; the session persists in
+`~/.railway/config.json`), then deploy with the same `env -u …` prefix:
+`env -u RAILWAY_TOKEN -u RAILWAY_API_TOKEN railway up --service app --detach -m "…"`, and poll
+`railway deployment list --service app --json` (also `env -u …`) to terminal `SUCCESS`.
+
 Config is env-driven, prefix `KKR_`, read from environment + `.env` (see `src/config.py`,
 template `.env.example`). The truth-of-the-source for any setting is `src/config.py`, not the docs.
 In addition to env/`.env`, any setting can be supplied via `config.yaml` (path override
