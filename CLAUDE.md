@@ -51,8 +51,14 @@ DSL can't compose strings, so `KKR_POSTGRES_DSN` (+asyncpg) and all secrets are 
 `scripts/railway-bootstrap.sh` and declared `preserve()` in `railway.ts`. `railway config plan` /
 `apply` need `RAILWAY_IAC_TS_BIN="$PWD/.railway/node_modules/.bin/railway-iac-ts"` (TS runner SDK
 installed in `.railway/` via `npm install`; `node_modules` is gitignored). Full guide:
-[docs/deployment.md](docs/deployment.md), [.railway/README.md](.railway/README.md). Only one process
-may poll the bot token — stop the local/NAS instance before running Railway (and vice versa).
+[docs/deployment.md](docs/deployment.md), [.railway/README.md](.railway/README.md).
+
+**Dev and prod are separate contours** — the prod bot (Railway) and the dev bot (local/NAS) use
+**different Telegram bot tokens**, so redeploying/running prod does NOT require stopping anything else
+and vice versa. (Earlier docs said "stop the other instance before deploying" — that was wrong; the
+two contours are isolated.) DB schema migrations run automatically on deploy — the image entrypoint
+(`scripts/docker-entrypoint.sh`) runs `alembic upgrade head` before `python main.py`, so a new
+migration ships just by deploying.
 
 Config is env-driven, prefix `KKR_`, read from environment + `.env` (see `src/config.py`,
 template `.env.example`). The truth-of-the-source for any setting is `src/config.py`, not the docs.
@@ -119,14 +125,46 @@ potential `context ↔ agent` import cycle. Do not pass live objects through age
 **State-mutating tools return `Command(update=...)`, not `dict`.** Returning a dict would make
 `ToolNode` treat it as `ToolMessage` content and the state wouldn't update. Tools in
 [src/agent/tools/](src/agent/tools/): `set_booking_info`, `send_wishes_to_hotel`, `reply_to_hotel`,
-`inform_step`, `cancel_task`, `search_internet`, `extract_web_page`.
+`inform_step`, `cancel_task`, `search_internet`, `extract_web_page`, plus the four scheduled-task
+tools (`set_scheduled_task` / `list_scheduled_tasks` / `update_scheduled_task` /
+`cancel_scheduled_task` in [src/agent/tools/scheduling.py](src/agent/tools/scheduling.py)).
+
+**Scheduled tasks (Temporal Schedules + DB catalog).** The agent can plan its own future turns —
+see [docs/agent.md](docs/agent.md#запланированные-задачи--schedulingpy). The firing schedule lives
+server-side on Temporal, id `kkr-sched:{client_id}:{task_key}`; the agent's list/existence **catalog**
+lives in the `scheduled_tasks` table (`ScheduledTaskORM`, keyed `(client_id, task_key)` + display
+metadata) — because `list_schedules` can't filter schedules server-side (the visibility list filter
+only applies to Workflow Executions), so listing/existence is served from the DB and create/update/
+cancel keep both in sync (Temporal-first for delete/update; catalog-first with rollback for create).
+Because a Temporal Schedule action can only *start* a workflow (no signal-with-start in the Python
+SDK), each fire starts the trivial `ScheduledTurn` workflow
+([src/temporal/scheduled_turn.py](src/temporal/scheduled_turn.py)), whose `enqueue_scheduled_turn`
+activity does the same signal-with-start onto `queue:{thread_id}` that `agent_step` does — so a
+firing is indistinguishable from a guest turn. The Schedule API wrapper is
+[src/temporal/schedules.py](src/temporal/schedules.py); the tools + that activity reach Temporal via
+the lazily-connected `temporal_client` on `get_context()` ([src/context.py](src/context.py)); the
+catalog goes through `ScheduledTaskRepository` ([src/db/repositories.py](src/db/repositories.py)).
+A one-shot task (`when`/`in`) **self-retires after firing** — `enqueue_scheduled_turn`
+(`retire_one_shot`) deletes its Temporal schedule + catalog row so it doesn't linger as "active";
+recurring (`cron`) tasks persist until explicitly cancelled/updated or wiped by `/new`
+(`cancel_all_scheduled_tasks` in [src/bot/core.py](src/bot/core.py)).
+Times are NAIVE local strings + an explicit `zone` (`home` | `trip`) resolved from
+`EmailState.home_timezone` / `trip_timezone` (set via `set_booking_info`); `ScheduleInput` is a
+strict pydantic model. `ScheduledTurn` and `enqueue_scheduled_turn` are registered in the worker
+alongside `AgentQueue`/`AgentWorkflow`. The catalog ships as the
+`20260719_1730_…_add_scheduled_tasks` alembic migration.
 
 **`booking_field` reducer** — booking fields in `EmailState` keep the existing value when the
 update is `None`. So `set_booking_info` can be called with any subset of fields per turn without
-clobbering the rest.
+clobbering the rest. Besides the booking fields, `EmailState` carries `home_timezone` /
+`trip_timezone` (IANA names) that anchor scheduled-task times.
 
 **Self-correction, not crashes.** Tools raise `SelfCorrectionError` on violated preconditions
-(sending without full booking, replying before a hotel reply arrived). The tool-call wrapper
+(sending without full booking, replying before a hotel reply arrived, scheduling before the chosen
+timezone is set). Invalid tool input — e.g. a malformed `ScheduleInput` (bad `when`/`cron`/`in`,
+or two fields at once) — surfaces the same way: the `ScheduleInput` validators raise
+`SelfCorrectionError` directly (a generic `pydantic.ValidationError` fallback also exists in the
+wrapper for other pydantic-typed args). The tool-call wrapper
 `run_tool_call` ([src/agent/middleware.py](src/agent/middleware.py), invoked from the graph's
 `_tool_wrapper` in [src/agent/agent.py](src/agent/agent.py)) converts that into a `ToolMessage` hint
 for the next turn; the same wrapper applies the per-tool retry policy.

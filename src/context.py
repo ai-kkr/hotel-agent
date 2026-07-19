@@ -1,5 +1,8 @@
+from __future__ import annotations
+
+import asyncio
 from dataclasses import dataclass
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import fastapi
 from aiogram import Bot
@@ -13,10 +16,14 @@ from src.db.session import create_engine, session_factory
 from src.integrations.mailtrap.client import MailtrapClient
 from src.integrations.mailtrap.mailtrap_inbound import AuthenticatedClient
 
+if TYPE_CHECKING:
+    from temporalio.client import Client
+
 __all__ = [
     "AppContext",
     "ApplicationContext",
     "get_context",
+    "get_temporal_client",
     "set_context",
 ]
 
@@ -27,9 +34,18 @@ class ApplicationContext:
     mailtrap_client: MailtrapClient
     session_factory: async_sessionmaker[AsyncSession]
     tavily_client: TavilyClient
+    #: Lazily-connected Temporal client (one per worker process), reused by the scheduling tools
+    #: and the ``enqueue_scheduled_turn`` activity. Connected on first access via
+    #: :func:`get_temporal_client`; ``None`` until then.
+    temporal_client: Client | None = None
 
 
 _ctx: ApplicationContext | None = None
+
+#: Serialises the lazy ``Client.connect`` in :func:`get_temporal_client` so two concurrent
+#: first-callers don't both connect (the loser's client would be orphaned — a connection leak).
+#: Binds to the running loop on first use (Python 3.10+ ``asyncio.Lock`` needs no loop at creation).
+_temporal_client_lock = asyncio.Lock()
 
 
 def get_context() -> ApplicationContext:
@@ -41,6 +57,37 @@ def get_context() -> ApplicationContext:
 def set_context(context: ApplicationContext) -> None:
     global _ctx
     _ctx = context
+
+
+async def get_temporal_client() -> Client:
+    """Return the process-wide Temporal client, connecting it lazily on first use.
+
+    Scheduling tools and the ``enqueue_scheduled_turn`` activity reach the Temporal Schedule API
+    through this instead of a per-call ``Client.connect`` (which is what the HTTP-handler-driven
+    ``agent_step`` path does). Uses the same ``message_aware_data_converter`` as the worker so the
+    ``RunInput`` frozen into a Schedule action round-trips identically to ``agent_step``.
+
+    Double-checked under :data:`_temporal_client_lock`: the connect is an ``await``, so without the
+    lock two concurrent first-callers would both connect and the loser's client would be leaked.
+    """
+    ctx = get_context()
+    if ctx.temporal_client is not None:
+        return ctx.temporal_client
+    async with _temporal_client_lock:
+        if ctx.temporal_client is not None:  # re-check — another task may have connected while we waited
+            return ctx.temporal_client
+        # Imported lazily so importing this module (pulled in broadly by the FastAPI app) never
+        # imports temporalio at load time.
+        from temporalio.client import Client
+
+        from src.temporal.converter import message_aware_data_converter
+
+        settings = get_settings()
+        ctx.temporal_client = await Client.connect(
+            settings.temporal_target,
+            data_converter=message_aware_data_converter,
+        )
+    return ctx.temporal_client
 
 
 type AppContext = Annotated[ApplicationContext, fastapi.Depends(get_context)]

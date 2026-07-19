@@ -13,6 +13,11 @@ class RunInput(BaseModel):
     ``state_update`` is an optional partial-state merge applied to the loaded state before the turn
     runs — used by the webhook to inject a hotel reply's ``Message-ID``/subject (so ``reply_to_hotel``
     can thread the next email) without a separate state-write call. ``None`` for a plain turn.
+
+    ``task_key`` / ``one_shot`` are scheduling metadata, set only for scheduled turns (``None`` /
+    ``False`` for guest/hotel turns). ``one_shot`` tells the ``enqueue_scheduled_turn`` activity to
+    retire the task (delete its Temporal schedule + catalog row) after firing — a one-shot reminder
+    has done its job and shouldn't linger as "active".
     """
 
     state: EmailState
@@ -23,4 +28,5 @@ class RunInput(BaseModel):
     client_inbox: str | None = None
     from_email: str | None = None
     state_update: EmailState | None = None
-
+    task_key: str | None = None
+    one_shot: bool = False

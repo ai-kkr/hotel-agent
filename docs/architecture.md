@@ -22,7 +22,8 @@
                                                   │   model ──► tools ──► model …
                                                   ▼
                                      tools: set_booking_info, send_wishes_to_hotel, reply_to_hotel,
-                                     search_internet, extract_web_page, inform_step, cancel_task
+                                     search_internet, extract_web_page, inform_step, cancel_task,
+                                     set/list/update/cancel_scheduled_task
                             ┌─────────────────────────────────────┼──────────────────────────┐
                             ▼                                     ▼                          ▼
                       PostgreSQL (src/db)              Mailtrap send (письмо отелю)    Tavily (поиск)
@@ -35,6 +36,9 @@
                                   │
                                   └── In-Reply-To совпал с outbound? ──► ход "hotel reply:" (+ state_update)
                                   └── иначе ──► это пересланное письмо гостя ──► ход "forwarded email:"
+
+   Temporal Schedules ──(по расписанию)──► ScheduledTurn ──activity──► enqueue_scheduled_turn
+                                              └── signal-with-start ──► AgentQueue (как обычный ход)
 ```
 
 ## Компоненты
@@ -47,8 +51,9 @@
 её нет. Затем `create_app(ctx)` собирает FastAPI-приложение, а `uvicorn.run` поднимает сервер. В
 `lifespan`: запускается задача polling'а бота и **Temporal-воркер** (`run_worker`,
 [`src/temporal/worker.py`](../src/temporal/worker.py)) — он подключается к
-`KKR_TEMPORAL_TARGET`, регистрирует воркфлоу `AgentQueue` + `AgentWorkflow`, активности
-`load_state`/`save_state` и плагин `LangGraphPlugin` (граф `"agent"` = `build_email_agent()`); воркер
+`KKR_TEMPORAL_TARGET`, регистрирует воркфлоу `AgentQueue` + `AgentWorkflow` + `ScheduledTurn`,
+активности `load_state`/`save_state`/`enqueue_scheduled_turn` и плагин `LangGraphPlugin` (граф
+`"agent"` = `build_email_agent()`); воркер
 бежит на `UnsandboxedWorkflowRunner`, т. к. песочница Temporal не дружит с импортами langgraph/langchain.
 При остановке аккуратно гасятся: polling, http-сессия aiogram (иначе uvicorn виснет при завершении)
 и воркер (`worker.shutdown()`), и сбрасываются очереди Langfuse.
@@ -57,8 +62,11 @@
 
 Процесс-синглтон `ApplicationContext` (`get_context()` / `set_context()`), доступный из любого
 места. Несёт только тяжёлые **несериализуемые** зависимости: `Bot` (aiogram), `MailtrapClient`,
-`TavilyClient` и `session_factory`. Чат-модели здесь нет — её строит нода `model`. Инструменты и
-активности достают нужное **лениво**, прямо внутри себя (см. [«Сериализуемый контекст»](#сериализуемый-контекст-агента)).
+`TavilyClient` и `session_factory`; плюс лениво подключаемый `temporal_client`
+(`get_temporal_client()` — одно `Client.connect(..., data_converter=message_aware_data_converter)`
+на процесс, переиспользуется тулами планирования и активностью `enqueue_scheduled_turn`). Чат-модели
+здесь нет — её строит нода `model`. Инструменты и активности достают нужное **лениво**, прямо внутри
+себя (см. [«Сериализуемый контекст»](#сериализуемый-контекст-агента)).
 
 ### Telegram-бот — `src/bot`
 
@@ -67,11 +75,17 @@
     нет) и шлёт приветствие с личным адресом для пересылки брони;
   - `/new` ([`command_new_handler`](../src/bot/core.py)) — сбрасывает контекст агента для клиента:
     удаляет строку состояния в `states` (`delete_state_by_client_id`, ключ — `clients.id`; история
-    сообщений, данные брони, wishes, threading-состояние — всё). Записи `outbound_emails` остаются в
-    Postgres, поэтому запоздавший ответ отеля всё равно смаршрутизируется — в уже пустой контекст;
+    сообщений, данные брони, wishes, threading-состояние — всё) **и отменяет все запланированные
+    задачи клиента** (`cancel_all_scheduled_tasks` — Temporal-расписание + строку каталога
+    `scheduled_tasks`), чтобы никакая задача не стрельнула в уже пустой контекст. Записи
+    `outbound_emails` остаются в Postgres, поэтому запоздавший ответ отеля всё равно
+    смаршрутизируется — в уже пустой контекст;
   - любое текстовое сообщение ([`chat_handler`](../src/bot/core.py)) — ставит ход агента в очередь
     через `agent_step` (Temporal) и сразу возвращает управление; ответ агент пришлёт сам из своих
-    активностей. Сообщения, начинающиеся с `/`, игнорируются (неизвестная команда);
+    активностей. Сообщения, начинающиеся с `/`, игнорируются (неизвестная команда). Перед отправкой
+    в агента к тексту пришпиливается текущее время клиента (`build_now_context`: UTC + зоны
+    дома/поездки, если заданы) — штамп лежит **в human-message** (хвост запроса), чтобы не ломать
+    prefix-cache; зоны читаются из state JSONB через `ClientRepository.get_timezones`;
   - `@dp.errors()` — прокидывает исключения обработчиков в лог, чтобы aiogram не глотал их
     молча.
 - [`app.py`](../src/bot/app.py) — `run_bot()`: регистрирует список команд (`/start`, `/new`) и
@@ -117,11 +131,21 @@
   → (опц. `state_update`) → `g.ainvoke` (`InMemorySaver` в рамках хода) → `save_state`. Langfuse
   trace id детерминированно выводится из `run_id` (см. [architecture.md gotchas](#../CLAUDE.md)).
 - [`activities.py`](../src/temporal/activities.py) — `load_state`/`save_state`: (де)сериализация
-  `EmailState` через `ClientRepository`.
+  `EmailState` через `ClientRepository`; плюс `enqueue_scheduled_turn(run_input)` — активность
+  воркфлоу `ScheduledTurn`, делающая signal-with-start на `queue:{thread_id}` (тот же путь, что и
+  `agent_step`), через `get_context().temporal_client`.
+- [`scheduled_turn.py`](../src/temporal/scheduled_turn.py) — `ScheduledTurn`: тривиальный воркфлоу,
+  который Temporal Schedule стартует на каждое срабатывание (Schedule не умеет signal-with-start,
+  только старт воркфлоу); его единственная активность — `enqueue_scheduled_turn`.
+- [`schedules.py`](../src/temporal/schedules.py) — тонкая обёртка над Temporal Schedule API для
+  запланированных задач: `create_or_idempotent` / `list_for_client` / `update` / `delete`; id
+  `kkr-sched:{client_id}:{task_key}`, перевод модели `ScheduleInput` в `ScheduleSpec` (наивное
+  локальное время + выбранная зона как `time_zone_name`), сборка `RunInput` хода.
 - [`converter.py`](../src/temporal/converter.py) — `message_aware_data_converter`: восстанавливает
   классы langchain-сообщений и `Command` после декода, чтобы они пережили границу workflow↔activity.
 - [`worker.py`](../src/temporal/worker.py) — `run_worker`: подключение к Temporal, регистрация
-  воркфлоу/активностей/плагина.
+  воркфлоу (`AgentQueue`, `AgentWorkflow`, `ScheduledTurn`) и активностей (`load_state`,
+  `save_state`, `enqueue_scheduled_turn`) и плагина.
 
 ### FastAPI и webhook — `src/app`
 
@@ -149,12 +173,22 @@ SQLAlchemy 2 (async, asyncpg). Модели в [`models.py`](../src/db/models.py
   `JSONB` (на Postgres) / `JSON` (SQLite в тестах); `StateType`
   ([`types.py`](../src/db/types.py)) прозрачно (де)сериализует единственное не-JSON-поле —
   `messages` (langchain `BaseMessage`) через `messages_to_dict`/`messages_from_dict`.
+- **`ScheduledTaskORM`** (`scheduled_tasks`) — **каталог** запланированных задач клиента (индекс для
+  `list`/existence). PK `(client_id, task_key)` (+ ведущий префиксный индекс по `client_id`); несёт
+  display-метаданные (`description`, `spec_summary`, `paused`, `remaining`). Само *срабатывание*
+  живёт в Temporal Schedule (id `kkr-sched:{client_id}:{task_key}`); эта таблица — только каталог,
+  потому что `list_schedules` не умеет фильтровать расписания серверно. Синхронизируется на каждом
+  create/update/cancel (Temporal-запись и каталог; см. риски в
+  [design.md](../openspec/changes/add-scheduled-tasks/design.md)).
 
 [`repositories.py`](../src/db/repositories.py) — `ClientRepository`: поиск клиента по
 `telegram_id` / `email` / `inbox` / `inbox_id`, создание клиента (с автоматическим
 provisioning'ом inbound-ящика), запись пересланных и отправленных писем, а также
 чтение/запись/удаление состояния агента (`get_state_by_client_id` / `set_state_by_client_id` /
-`delete_state_by_client_id`). [`session.py`](../src/db/session.py)
+`delete_state_by_client_id`), а также дешёвое чтение часовых поясов клиента из JSONB
+(`get_timezones` — для штампа текущего времени в чате). Рядом — `ScheduledTaskRepository`: CRUD
+над каталогом запланированных задач (`list_by_client` / `keys_for_client` / `get` / `upsert` /
+`delete`). [`session.py`](../src/db/session.py)
 — движок с `pool_pre_ping`/`pool_recycle` против «протухших» asyncpg-соединений и
 `session_context` (async-contextmanager с автокоммитом).
 
@@ -235,7 +269,9 @@ HTML-экранируется через `aiogram.utils.text_decorations.html_de
 ### Reducer `booking_field`
 
 Поля брони в `EmailState` (`hotel_name`, `booking_ref`, `from_date`, `to_date`, `hotel_email`,
-`guests`, `hotel_language`) используют редьюсер «keep existing when update is `None`». Это позволяет
-агенту вызывать `set_booking_info` с любым подмножеством полей за один `Command(update=...)`, а
-пропущенные (`None`) оставить нетронутыми — вместо того чтобы затирать их. Обязательных полей шесть
-(всё кроме `booking_ref`); `missing_booking_fields` проверяет именно их.
+`guests`, `hotel_language`, `home_timezone`, `trip_timezone`) используют редьюсер «keep existing when
+update is `None`». Это позволяет агенту вызывать `set_booking_info` с любым подмножеством полей за
+один `Command(update=...)`, а пропущенные (`None`) оставить нетронутыми — вместо того чтобы затирать
+их. Обязательных полей шесть (всё кроме `booking_ref`); `missing_booking_fields` проверяет именно их.
+Поля `home_timezone`/`trip_timezone` (IANA-имена) анкорят время запланированных задач — не обязательны
+для отправки письма, но нужны для тула `set_scheduled_task`.

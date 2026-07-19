@@ -1,6 +1,7 @@
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import cast, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.state import EmailState
@@ -8,7 +9,7 @@ from src.context import AppContext, get_context
 from src.integrations.mailtrap.mailtrap_inbound.models import MessageDetails
 
 from .models import ClientORM as Client
-from .models import ForwardedEmailORM, OutboundEmailORM, StateORM
+from .models import ForwardedEmailORM, OutboundEmailORM, ScheduledTaskORM, StateORM
 
 
 class DuplicateForwardedEmailError(Exception):
@@ -139,5 +140,96 @@ class ClientRepository:
             select(StateORM).filter(StateORM.client_id == client_id)
         )
         row = result.scalar_one_or_none()
+        if row is not None:
+            await self.db_session.delete(row)
+
+    async def get_timezones(self, client_id: int) -> tuple[str | None, str | None]:
+        """Cheaply read the client's scheduling timezones (``home_timezone``, ``trip_timezone``)
+        straight out of the ``states`` JSONB — without loading the full state (no message history).
+
+        The ``state`` column is wrapped in :class:`StateType` (a ``TypeDecorator``), whose
+        comparator doesn't expose ``astext`` — so we ``cast`` it to ``JSONB`` first, then use the
+        ``->>`` text-extraction the JSON comparator provides. Returns ``(None, None)`` when there's
+        no state row or the fields aren't set yet.
+        """
+        result = await self.db_session.execute(
+            select(
+                cast(StateORM.state, JSONB)["home_timezone"].astext,
+                cast(StateORM.state, JSONB)["trip_timezone"].astext,
+            ).where(StateORM.client_id == client_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return (None, None)
+        return (row[0], row[1])
+
+
+class ScheduledTaskRepository:
+    """CRUD over the :class:`ScheduledTaskORM` catalog — the agent's cheap list/existence index for a
+    client's scheduled tasks (Temporal Schedules can't be filtered server-side, so we index them).
+
+    The caller commits the session (via ``session_context``); these methods only stage changes.
+    """
+
+    def __init__(self, db_session: AsyncSession):
+        self.db_session = db_session
+
+    async def list_by_client(self, client_id: int) -> list[ScheduledTaskORM]:
+        """All catalog rows for ``client_id`` (ordered for stable listing)."""
+        result = await self.db_session.execute(
+            select(ScheduledTaskORM)
+            .where(ScheduledTaskORM.client_id == client_id)
+            .order_by(ScheduledTaskORM.created_at, ScheduledTaskORM.task_key)
+        )
+        return list(result.scalars().all())
+
+    async def keys_for_client(self, client_id: int) -> list[str]:
+        """Just the ``task_key``s for ``client_id`` — for existence checks / error messages."""
+        result = await self.db_session.execute(
+            select(ScheduledTaskORM.task_key).where(ScheduledTaskORM.client_id == client_id)
+        )
+        return list(result.scalars().all())
+
+    async def get(self, client_id: int, task_key: str) -> ScheduledTaskORM | None:
+        result = await self.db_session.execute(
+            select(ScheduledTaskORM).where(
+                ScheduledTaskORM.client_id == client_id,
+                ScheduledTaskORM.task_key == task_key,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert(
+        self,
+        *,
+        client_id: int,
+        task_key: str,
+        description: str,
+        spec_summary: str,
+        paused: bool,
+        remaining: int | None,
+    ) -> None:
+        """Insert or fully replace a catalog row (the display fields)."""
+        row = await self.get(client_id, task_key)
+        if row is None:
+            self.db_session.add(
+                ScheduledTaskORM(
+                    client_id=client_id,
+                    task_key=task_key,
+                    description=description,
+                    spec_summary=spec_summary,
+                    paused=paused,
+                    remaining=remaining,
+                )
+            )
+        else:
+            row.description = description
+            row.spec_summary = spec_summary
+            row.paused = paused
+            row.remaining = remaining
+
+    async def delete(self, client_id: int, task_key: str) -> None:
+        """Remove a catalog row (no-op if absent)."""
+        row = await self.get(client_id, task_key)
         if row is not None:
             await self.db_session.delete(row)

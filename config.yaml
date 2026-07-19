@@ -36,6 +36,23 @@ tool_retry:
       max_retries: 0
     cancel_task:
       max_retries: 0
+    # Планирование задач (Temporal Schedules). Создание/изменение/отмена не повторяются:
+    # id детерминирован (kkr-sched:{client_id}:{task_key}), так что повтор создал бы дубль или
+    # подрал бы id; идемпотентность даётся "already exists" → успех, а не ретраем.
+    set_scheduled_task:
+      max_retries: 0
+    update_scheduled_task:
+      max_retries: 0
+    cancel_scheduled_task:
+      max_retries: 0
+    # Чтение списка задач — безопасно повторять (read-only, идемпотентно): сетевой блип ретраится.
+    list_scheduled_tasks:
+      max_retries: 3
+      backoff_factor: 2.0
+      initial_delay: 1.0
+      max_delay: 30.0
+      jitter: true
+      retry_on: transient
     # Сетевые инструменты — повторяем с backoff.
     search_internet:
       max_retries: 3

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -110,6 +110,38 @@ class StateORM(Base):
         StateType,
         nullable=False,
     )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ScheduledTaskORM(Base):
+    """DB catalog row for a client's scheduled task — the index the agent lists/checks cheaply.
+
+    Temporal Schedules can't be filtered server-side when listing (no search-attribute / id list
+    filter — the visibility list filter only applies to Workflow Executions), so a per-client scan of
+    all schedules is the only Temporal-side option. To avoid that on every list / update / cancel, we
+    keep our own per-client index of ``task_key`` + the display metadata ``list_scheduled_tasks``
+    renders. Temporal remains the source of truth for the actual firing (cron/timing/action); this
+    table is the source of truth for "which tasks a client has" and what to show. Kept in sync on
+    every create / update / cancel (see :mod:`src.agent.tools.scheduling` for the write ordering);
+    a crash between the Temporal write and this one is a rare divergence temporal-ui can reconcile.
+    """
+
+    __tablename__ = "scheduled_tasks"
+    client_id: Mapped[int] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    description: Mapped[str] = mapped_column(String(1024), nullable=False)
+    spec_summary: Mapped[str] = mapped_column(String(255), nullable=False)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: For a bounded recurring task (``cron`` + ``remaining``) — the remaining-firings count shown in
+    #: the listing. ``None`` for one-shot / unbounded recurring (then "осталось N" is not rendered).
+    remaining: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(),

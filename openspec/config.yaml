@@ -1,0 +1,109 @@
+schema: spec-driven
+
+context: |
+  Project: kkr-hotel-assist — a Telegram bot with an LLM concierge agent that emails hotels
+  on a guest's behalf (parse a forwarded booking, find the hotel's contact email, draft and
+  send the email in the hotel's language, carry the follow-up thread autonomously).
+
+  Tech stack: Python 3.12 · FastAPI · aiogram 3 · Temporal (workflow runtime + LangGraph
+  plugin) · LangGraph/LangChain · SQLAlchemy 2 (async, asyncpg) · Alembic · Mailtrap
+  (send + inbound webhooks) · Tavily (web search) · structlog · pydantic-settings.
+  Managed with **uv**. Target Python 3.12.
+
+  Hard architectural constraints (see CLAUDE.md / docs/architecture.md / docs/agent.md):
+  - One hand-built ReAct agent: a langgraph StateGraph (model + tools nodes) in
+    src/agent/agent.py — NOT create_agent. State = EmailState, context = EmailContext.
+    The graph runs under Temporal; each node executes as a Temporal activity.
+  - Serializable agent state/context is a HARD constraint. EmailContext
+    (src/agent/context.py) carries ONLY flat data because it crosses the
+    workflow↔activity boundary through Temporal's data converter. Tools fetch heavy deps
+    (chat model, Mailtrap, Tavily, session_factory) LAZILY inside themselves via the
+    process-singleton get_context() (src/context.py), never through parameters. Do NOT
+    pass live objects through agent state/context.
+  - State-mutating tools return Command(update=...), never dict. Tools live in
+    src/agent/tools/. Self-correction via SelfCorrectionError, not crashes; the wrapper
+    run_tool_call (src/agent/middleware.py) converts it to a ToolMessage hint and applies
+    per-tool retry policy.
+  - Agent state is persisted in the `states` table (StateORM, JSONB), NOT via a LangGraph
+    checkpointer. Each turn: AgentWorkflow loads state (load_state activity), runs graph
+    with an in-turn InMemorySaver, persists result (save_state activity). A custom Temporal
+    data converter (src/temporal/converter.py) round-trips langchain messages and Command.
+  - Two entry points both funnel into agent_step() (src/temporal/client.py) via a per-client
+    Temporal queue workflow (src/temporal/queue.py): Telegram chat_handler
+    (src/bot/core.py) and the inbound Mailtrap webhook POST /send_test_email
+    (src/app/webhook.py). Handlers enqueue and return immediately; the agent pushes its
+    reply back to Telegram from its own activities — never await a result in a handler.
+  - Email threading: send_wishes_to_hotel sets Reply-To: <guest inbox>, stores
+    OutboundEmailORM.message_id; reply_to_hotel sets In-Reply-To/References.
+  - $user_inbox placeholder is substituted at render time in send_formatted
+    (src/bot/utils.py). Agent output is Telegram HTML sent with parse_mode=HTML;
+    uncontrolled text is HTML-escaped. Language: Russian with the guest; hotel_language
+    (ru/zh/en) chosen by the agent and fixed via set_booking_info.
+
+  Vendored clients are GENERATED: src/integrations/mailtrap/mailtrap_inbound|mailtrap_send|
+  mailtrap_sending are excluded from ruff — regenerate via
+  `uv run python scripts/generate_mailtrap_client.py`, never hand-edit.
+
+  Commands:
+  - uv sync --extra dev
+  - docker compose up -d postgres temporal   (temporal-ui optional, langfuse optional)
+  - uv run alembic upgrade head
+  - uv run python main.py   (FastAPI/uvicorn + Telegram polling + Temporal worker in lifespan)
+  - uv run ruff check && uv run ruff format
+  - uv run ty check                           (PRODUCTION code in src/ ONLY)
+  - uv run alembic check                       (model/DB drift)
+  - uv run alembic revision -m "..."           (autogen migration)
+  - uv run pytest path/to/test.py::test_name -q
+
+  Config is env-driven, prefix KKR_, read from env + .env (truth-of-source = src/config.py),
+  PLUS a layered config.yaml (YamlConfigSettingsSource) for structured tuning. Precedence:
+  constructor > env > .env > YAML > defaults.
+
+  Deploy: Railway IaC (.railway/railway.ts). Canonical/deploy branch is **main** (push there,
+  not master). GitHub auto-deploy is inactive — deploy with
+  `railway up --service app --detach -m "..."`, then poll `railway deployment list --service
+  app --json` to SUCCESS. Only one process may poll the bot token at a time.
+
+  Testing philosophy (IMPORTANT):
+  - Don't write too many tests. Never micro-unit tests that just construct a pydantic model
+    and round-trip fields (that tests the framework, not our code).
+  - Every test should be integration-flavored on mocks: drive a real code path end-to-end
+    (agent turn, webhook handler, repository + DB) with external boundaries mocked — the
+    LLM (respx for HTTP or a deterministic fake chat model), Mailtrap/Tavily HTTP (respx),
+    and the DB (in-memory aiosqlite, or asyncpg against docker Postgres for true DB
+    integration). One test exercising a whole chain > five poking one function each.
+  - Tests use loose typing (# type: ignore, which ty ignores on purpose); ty is scoped to
+    src/ only. pyproject already configures pytest (asyncio_mode=auto, pythonpath=[.,scripts]);
+    respx + aiosqlite are in dev deps.
+
+rules:
+  proposal:
+    - State whether the change touches agent state/context serializability, the Temporal
+      workflow↔activity boundary, or email threading — these are the highest-risk areas.
+    - Call out any new tool added to src/agent/tools/ and whether it returns
+      Command(update=...) (state-mutating) or a plain result.
+    - Note deployment impact — does it require `railway up`, a new env var (KKR_*), an Alembic
+      migration, or coordination to stop the other bot instance?
+    - Include a brief Non-goals section.
+  specs:
+    - Express scenarios as Given/When/Then where behavior is non-trivial.
+    - Specify the agent-language behavior explicitly where relevant (Russian with guest;
+      hotel_language ru/zh/en with hotel).
+    - Cover the self-correction paths — what SelfCorrectionError preconditions exist and what
+      the agent does instead of crashing.
+  design:
+    - Respect the "flat data only in EmailContext / lazy deps via get_context()" rule. If a
+      design would pass a live object through agent state/context, reject and rework.
+    - If the change crosses the Temporal workflow↔activity boundary, note how the data
+      converter (src/temporal/converter.py) handles any new non-JSON field.
+    - For DB changes, reference StateORM/JSONB and the load_state/save_state activities; do
+      NOT introduce a LangGraph checkpointer or checkpoint_* tables.
+    - Prefer editing/reusing existing tools and the existing graph over adding new nodes.
+  tasks:
+    - Each task should be completable and verifiable (ruff, ty check, alembic check, pytest).
+    - If a migration is needed, include the `uv run alembic revision -m "..."` +
+      `uv run alembic upgrade head` step and the `uv run alembic check` verification.
+    - Never include a step that hand-edits the vendored generated Mailtrap clients; if they
+      need changes, regenerate via scripts/generate_mailtrap_client.py.
+    - Group tests as few integration-style tests on mocks per the testing philosophy — do not
+      add micro-unit tests.

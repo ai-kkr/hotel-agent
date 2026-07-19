@@ -37,6 +37,13 @@ class EmailState(AgentState, total=False):
     #: every voucher has a code; when present it goes into the email subject and the letter body.
     booking_ref: Annotated[str | None, booking_field]
 
+    #: IANA timezone of the guest's home (e.g. "Europe/Moscow") — anchors scheduled-task times the
+    #: guest expresses in their home zone. Set via ``set_booking_info``; read by the scheduling tools.
+    home_timezone: Annotated[str | None, booking_field]
+    #: IANA timezone of the trip / hotel (e.g. "Asia/Shanghai") — anchors scheduled-task times the
+    #: guest expresses in the destination zone. Set via ``set_booking_info``; read by the scheduling tools.
+    trip_timezone: Annotated[str | None, booking_field]
+
     user_wishes: list[str]
     user_question: str | None
     task_cancelled: bool

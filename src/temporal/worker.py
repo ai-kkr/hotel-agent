@@ -9,9 +9,10 @@ from src.agent.agent import build_email_agent
 from src.agent.tracing import init_langfuse
 from src.config import get_settings
 from src.logging import get_logger
-from src.temporal.activities import load_state, save_state
+from src.temporal.activities import enqueue_scheduled_turn, load_state, save_state
 from src.temporal.agent_runner import AgentWorkflow
 from src.temporal.queue import AgentQueue
+from src.temporal.scheduled_turn import ScheduledTurn
 
 with workflow.unsafe.imports_passed_through():
     from src.temporal.converter import message_aware_data_converter
@@ -36,8 +37,8 @@ async def run_worker():
     worker = Worker(
         client,
         task_queue=setting.temporal_task_queue,
-        workflows=[AgentQueue, AgentWorkflow],
-        activities=[load_state, save_state],
+        workflows=[AgentQueue, AgentWorkflow, ScheduledTurn],
+        activities=[load_state, save_state, enqueue_scheduled_turn],
         plugins=[plugin],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )

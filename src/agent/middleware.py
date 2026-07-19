@@ -113,6 +113,18 @@ async def run_tool_call(
                 ),
                 tool_call_id=tool_call_id,
             )
+        except ValidationError as e:
+            # Bad tool input (e.g. a malformed schedule) — pydantic rejected it. Treat like
+            # self-correction: show the agent what's wrong and let it fix the args instead of
+            # crashing the turn. Never retried (it would re-fail the same validation).
+            log.warning("agent.tool_validation", tool=tool_name, error=str(e))
+            return ToolMessage(
+                content=(
+                    f"ValidationError в аргументах тулы {tool_name}: {e}. "
+                    "Скорректируй аргументы вызова в соответствии с ошибкой."
+                ),
+                tool_call_id=tool_call_id,
+            )
         except Exception as exc:
             last_exc = exc
             if not _is_retryable(exc, mode=policy.retry_on):
