@@ -30,4 +30,4 @@
 - [x] 5.2 `uv run ty check` (src/ only) — clean on all new/changed files.
 - [x] 5.3 `uv run alembic check` — adds one migration (`scheduled_tasks` catalog); `alembic upgrade head` applies cleanly. Only the repo-wide pre-existing `created_at`/`updated_at` NOT-NULL cosmetic drift remains (same kind on every table).
 - [x] 5.4 `uv run pytest` for the new scheduling tests — 5 passed.
-- [ ] 5.2–5.4 green on `main`; then deploy with `railway up --service app --detach -m "feat: scheduled tasks (CRUD via Temporal Schedules)"`. (Dev and prod are isolated contours with different bot tokens — no instance needs stopping; migrations run via the image entrypoint's `alembic upgrade head`.)
+- [x] 5.2–5.4 green on `main`; then deploy with `railway up --service app --detach -m "feat: scheduled tasks (Temporal Schedules + DB catalog)"`. (Dev and prod are isolated contours with different bot tokens — no instance needs stopping; migrations run via the image entrypoint's `alembic upgrade head`.) — deployed `3102ece7` → SUCCESS, migration applied.
