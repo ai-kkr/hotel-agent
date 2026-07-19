@@ -23,4 +23,4 @@
 - [x] 4.2 `uv run ty check` clean (src/ only — note: compaction.py is in src/ so must pass the gate).
 - [x] 4.3 `uv run pytest tests/test_context_compaction.py -q` green.
 - [x] 4.4 `uv run alembic check` — confirm no model/DB drift (no migration expected).
-- [ ] 4.5 Commit on `main` and deploy: `env -u RAILWAY_TOKEN -u RAILWAY_API_TOKEN railway up --service app --detach -m "feat: context compaction for search/extract tool messages"`, then poll `railway deployment list --service app --json` to `SUCCESS`.
+- [x] 4.5 Commit on `main` and deploy: `env -u RAILWAY_TOKEN -u RAILWAY_API_TOKEN railway up --service app --detach -m "feat: context compaction for search/extract tool messages"`, then poll `railway deployment list --service app --json` to `SUCCESS`.
