@@ -23,13 +23,14 @@ from typing import Literal
 
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langgraph.graph import START, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from structlog import get_logger
 from temporalio.common import RetryPolicy
 
+from src.agent.compaction import compact, compaction_needed
 from src.agent.context import EmailContext
 from src.agent.helpers.langfuse import inject_langfuse_callback, with_langfuse
 from src.agent.helpers.openrouter import sticky_session_kwargs
@@ -55,7 +56,9 @@ async def model_node(
     lg.info("Model node", message=state["messages"][-1])
     settings = get_settings()
     model = build_model(settings)
-    model = model.bind_tools(tools, **sticky_session_kwargs(model, runtime.context.get("client_id")))
+    model = model.bind_tools(
+        tools, **sticky_session_kwargs(model, runtime.context.get("client_id"))
+    )
     async with typing(runtime.context.get("telegram_id")):
         result = await model.ainvoke(
             [
@@ -72,10 +75,28 @@ async def model_node(
     }
 
 
-async def tool_path(state: EmailState) -> Literal["tools", "__end__"]:
-    return tools_condition(
-        state,  # type: ignore
-    )
+async def tool_path(state: EmailState) -> Literal["tools", "cleanup", "__end__"]:
+    # Model emitted tool calls → run them. Otherwise either compact disposable search/extract
+    # output (one final node before END) or, if there is nothing to archive, shortcut to END and
+    # skip the cleanup activity entirely.
+    if tools_condition(state) == "tools":  # type: ignore
+        return "tools"
+    if compaction_needed(state["messages"]):
+        return "cleanup"
+    return "__end__"
+
+
+async def cleanup_node(state: EmailState) -> EmailState:
+    """End-of-turn compaction: replace disposable search/extract tool output with short stubs.
+
+    Pure Python on ``state["messages"]`` — no ``get_context()``, no LLM, no external calls. Each
+    stub reuses the heavy message's ``id`` so the stock ``add_messages`` reducer overwrites it in
+    place (id-upsert), preserving ``tool_call_id`` / ``name`` and the tool-call ↔ response linkage.
+    """
+    stubs = compact(state["messages"])
+    if stubs:
+        lg.info("context.compaction", compacted=len(stubs))
+    return {"messages": stubs}
 
 
 async def _tool_wrapper(request: ToolCallRequest, execute: ToolExecutor) -> ToolMessage | Command:
@@ -148,10 +169,20 @@ def build_email_agent() -> StateGraph:
         tool_node,
         metadata=common,
     )
+    workflow.add_node(
+        "cleanup",
+        cleanup_node,
+        # Pure Python on state — no LLM call, so a small fixed timeout (not llm_activity_timeout).
+        metadata={**common, "start_to_close_timeout": timedelta(seconds=10)},
+    )
     workflow.add_edge(START, "model")
     workflow.add_conditional_edges("model", tool_path)
     # After the tools run, hand control back to the model so it can act on the results. Without this
     # edge the graph ends as soon as the tools node returns (no outgoing edge from "tools").
     workflow.add_edge("tools", "model")
+    # End of turn: compact disposable search/extract output, then finish. (The shortcut in
+    # ``tool_path`` routes straight to ``__end__`` when there is nothing to archive, so this node
+    # only runs when compaction is actually needed.)
+    workflow.add_edge("cleanup", END)
 
     return workflow
