@@ -107,11 +107,23 @@ Tests use loose typing (`# type: ignore`, which `ty` ignores on purpose — see 
 Read [docs/architecture.md](docs/architecture.md) and [docs/agent.md](docs/agent.md) for the full
 treatment. The essentials that aren't obvious from any single file:
 
-**One ReAct agent, hand-built graph, run under Temporal.** A `langgraph.graph.StateGraph` (`model` +
-`tools` nodes) in [src/agent/agent.py](src/agent/agent.py) — **not** `create_agent` — state
-`EmailState`, context `EmailContext`. The graph is executed by the Temporal LangGraph plugin, which
-runs each node as an activity (see [src/temporal/worker.py](src/temporal/worker.py)). Conversation
-history is keyed per client via `ClientORM.thread_id` (`client:{id:04d}`).
+**One ReAct agent, hand-built graph, run under Temporal.** A `langgraph.graph.StateGraph` (`model`,
+`tools`, and `cleanup` nodes) in [src/agent/agent.py](src/agent/agent.py) — **not** `create_agent` —
+state `EmailState`, context `EmailContext`. The graph is executed by the Temporal LangGraph plugin,
+which runs each node as an activity (see [src/temporal/worker.py](src/temporal/worker.py)).
+Conversation history is keyed per client via `ClientORM.thread_id` (`client:{id:04d}`).
+
+**End-of-turn context compaction.** A turn ends `model → cleanup → END` (not `model → END`): the
+`cleanup` node replaces the heavy `ToolMessage` content of `search_internet` / `extract_web_page`
+**in place** with a short stub, so a one-shot search blob doesn't keep costing tokens across the
+whole thread. Mechanism: the stock `add_messages` reducer's **id-upsert** — the stub reuses the
+heavy message's `id`, so the reducer overwrites it (no custom reducer on `messages`). The stub
+preserves `id` / `tool_call_id` / `name` (tool-call↔response linkage stays intact) and carries
+`additional_kwargs["archived"]=True` so it's never re-processed. Whitelist is by `ToolMessage.name`
+(`ToolNode` sets it from the tool-call name) — never by size; a long hotel reply is never compacted.
+`tool_path` returns `"tools"` / `"cleanup"` / `"__end__"` and **shortcuts straight to `END`** when
+nothing is archivable (no cleanup activity scheduled). Pure data in/out — no LLM, no `get_context()`,
+no migration. Logic in [src/agent/compaction.py](src/agent/compaction.py).
 
 **The agent runs from two entry points**, both funnelling into `agent_step()` in
 [src/temporal/client.py](src/temporal/client.py) (signal-with-start enqueues one turn on the client's
@@ -219,6 +231,10 @@ instead of the hotel, so outbound sending can be tested without a real hotel.
   name `POST /send_test_email` is historical but live — it's registered on the Mailtrap side.
 - **`KKR_MAILTRAP_FROM_EMAIL` must be a verified sending-domain address** — an inbound-mailbox
   address as `From` gets `401 Unauthorized`.
+- **`tools_condition` returns a *string*, not a bool** — `"tools"` or `"__end__"`, both truthy. So
+  `if tools_condition(state):` is **always** true and will loop `model↔tools` forever; compare
+  explicitly (`== "tools"`) when branching on it, as `tool_path` in
+  [src/agent/agent.py](src/agent/agent.py) does for the cleanup shortcut.
 - **Temporal drives the agent.** The app lifespan ([src/app/factory.py](src/app/factory.py)) starts a
   Temporal `Worker` alongside the Telegram poller; the agent graph runs as a Temporal workflow with
   nodes executed as activities via the Temporal LangGraph plugin. `KKR_TEMPORAL_TARGET` (default

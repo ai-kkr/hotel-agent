@@ -19,11 +19,11 @@ email отеля, составляет и отправляет письмо на
   удалось найти email отеля).
 
 Агент реализован одним ReAct-графом на рукописном `langgraph.graph.StateGraph`
-([`src/agent/agent.py`](../src/agent/agent.py), узлы `model` + `tools`, state-схема `EmailState`,
-контекст `EmailContext`). Граф исполняется Temporal LangGraph-плагином: каждый узел бежёт как
-активность (см. [architecture.md](architecture.md#temporal--srctemporal)). История переписки
-привязана к клиенту через `ClientORM.thread_id` (`client:{id:04d}`); ход ставится в очередь через
-`agent_step` ([`src/temporal/client.py`](../src/temporal/client.py)).
+([`src/agent/agent.py`](../src/agent/agent.py), узлы `model` + `tools` + `cleanup`, state-схема
+`EmailState`, контекст `EmailContext`). Граф исполняется Temporal LangGraph-плагином: каждый узел
+бежёт как активность (см. [architecture.md](architecture.md#temporal--srctemporal)). История
+переписки привязана к клиенту через `ClientORM.thread_id` (`client:{id:04d}`); ход ставится в очередь
+через `agent_step` ([`src/temporal/client.py`](../src/temporal/client.py)).
 
 ## Языковая политика
 
@@ -90,6 +90,29 @@ email отеля, составляет и отправляет письмо на
 Веб-поиск через Tavily — для поиска email отеля, официального сайта, ответов на вопросы гостя
 (меню, расположение, достопримечательности). `extract_web_page` достаёт читаемый текст страницы
 (например, контактной). Счётчик `search_rounds` ведётся в state.
+
+Их `ToolMessage`-вывод — «одноразовый»: агент уже достал нужное (email/сайт/…) в структурные поля
+брони через `set_booking_info`, и сырой текст больше не нужен. Поэтому в конце хода нода `cleanup`
+(см. ниже) **замещает контент этих сообщений на месте** коротким стабом — чтобы тяжёлый блоб поиска
+не тянулся через всю ветку и не раздувал токены на следующих ходах.
+
+### Нода `cleanup` — компактизация контекста ([`compaction.py`](../src/agent/compaction.py))
+
+Ход заканчивается как `model → cleanup → END` (а не `model → END`). `cleanup` проходит по
+`state["messages"]` и для каждого `ToolMessage` из вайтлиста (`search_internet`, `extract_web_page`),
+ещё не помеченного архивным, строит короткий стаб-замену. Механика — **id-upsert** штатного редьюсера
+`add_messages`: стаб переиспользует `id` тяжёлого сообщения, поэтому редьюсер перезаписывает его на
+месте (свой редьюсер на `messages` не вводится). Стаб сохраняет `id` / `tool_call_id` / `name`
+(связка tool_call↔response остаётся целой) и несёт `additional_kwargs["archived"]=True`, чтобы нода
+не чистила его повторно на следующих ходах. Вайтлист — по `ToolMessage.name` (его выставляет
+`ToolNode` по имени tool-call'а), **никогда** по размеру — длинный ответ отеля не компактируется.
+
+`tool_path` возвращает `"tools"` / `"cleanup"` / `"__end__"` и **шорткатит прямо в `END`**, если
+архивировать нечего (активность `cleanup` не планируется вовсе). Нода — чистый Python по
+`messages`: без LLM, без `get_context()`, без миграций; логика в
+[`src/agent/compaction.py`](../src/agent/compaction.py) (`ARCHIVABLE_TOOLS`, `compaction_needed`,
+`compact`). Маркер `archived` — обычный словарь в `additional_kwargs`, поэтому проходит
+round-trip через `StateType` (JSONB) и `message_aware_data_converter` без изменений схемы.
 
 ### Запланированные задачи — [`scheduling.py`](../src/agent/tools/scheduling.py)
 

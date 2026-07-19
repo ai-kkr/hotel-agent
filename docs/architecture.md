@@ -19,7 +19,7 @@
                                                   │   load_state (activity) → InMemorySaver → g.ainvoke
                                                   ▼
                                    LangGraph-агент (src/agent): узлы бегут как Temporal-активности
-                                                  │   model ──► tools ──► model …
+                                                  │   model ──► tools ──► model … ──► cleanup ──► END
                                                   ▼
                                      tools: set_booking_info, send_wishes_to_hotel, reply_to_hotel,
                                      search_internet, extract_web_page, inform_step, cancel_task,
@@ -96,17 +96,24 @@
 ### Агент — `src/agent`
 
 Один ReAct-агент на рукописном [`langgraph.graph.StateGraph`](../src/agent/agent.py) (узлы `model` +
-`tools`) — без `create_agent`. Граф исполняется Temporal LangGraph-плагином, каждый узел бегёт как
-активность. Подробно — в [agent.md](agent.md). Здесь — только структурные файлы:
+`tools` + `cleanup`) — без `create_agent`. Граф исполняется Temporal LangGraph-плагином, каждый узел
+бегёт как активность. Подробно — в [agent.md](agent.md). Здесь — только структурные файлы:
 
 - [`state.py`](../src/agent/state.py) — `EmailState` (наследник `AgentState`) с полями брони,
   пожеланиями, флагом отмены и полями threading'а. Поля брони используют reducer `booking_field`
   (см. ниже).
 - [`context.py`](../src/agent/context.py) — `EmailContext` (TypedDict): только плоские данные
   (`from_email`, `reply_to`, `user_email`, `client_id`, `telegram_id`). Никаких объектов.
-- [`agent.py`](../src/agent/agent.py) — `build_email_agent()`: строит граф `model → tools → model`,
-  навешивая на каждый узел декораторы-хелперы (langfuse, typing) и оборачивая вызовы тул через
-  `run_tool_call` (retry + self-correction).
+- [`agent.py`](../src/agent/agent.py) — `build_email_agent()`: строит граф
+  `model → tools → model … → cleanup → END`, навешивая на каждый узел декораторы-хелперы (langfuse,
+  typing) и оборачивая вызовы тул через `run_tool_call` (retry + self-correction). `tool_path`
+  маршрутизирует `model` → `"tools"` (есть tool-calls) / `"cleanup"` (ход завершается и есть что
+  архивировать) / `"__end__"` (шорткат — архивировать нечего, `cleanup` не выполняется).
+- [`compaction.py`](../src/agent/compaction.py) — компактизация контекста: нода `cleanup` в конце
+  хода замещает тяжёлый контент `ToolMessage` от `search_internet` / `extract_web_page` коротким
+  стабом **на месте** через id-upsert штатного редьюсера `add_messages` (свой редьюсер не вводится),
+  сохраняя `id` / `tool_call_id` / `name` и помечая `additional_kwargs["archived"]=True`. Вайтлист —
+  по имени тулы, не по размеру. Чистый Python, без LLM/`get_context()`/миграций.
 - [`middleware.py`](../src/agent/middleware.py) — `run_tool_call`: повторяет транзиентные сбои тул по
   per-tool-политике и превращает `SelfCorrectionError` в `ToolMessage`-подсказку (поведение бывших
   middleware — см. [agent.md](agent.md#самокоррекция)).
