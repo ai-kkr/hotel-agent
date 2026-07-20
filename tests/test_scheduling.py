@@ -83,6 +83,7 @@ async def fake_client():
             mailtrap_client=None,  # type: ignore[arg-type]
             session_factory=session_factory(engine),
             tavily_client=None,  # type: ignore[arg-type]
+            flight_client=None,  # type: ignore[arg-type]
             temporal_client=client,
         )
     )

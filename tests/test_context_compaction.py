@@ -44,6 +44,7 @@ async def fake_tavily() -> AsyncIterator[_FakeTavily]:
             mailtrap_client=None,  # type: ignore[arg-type]
             session_factory=None,  # type: ignore[arg-type]
             tavily_client=client,  # type: ignore[arg-type]
+            flight_client=None,  # type: ignore[arg-type]
         )
     )
     yield client

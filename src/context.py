@@ -13,6 +13,8 @@ from tavily.tavily import TavilyClient
 
 from src.config import Settings, get_settings
 from src.db.session import create_engine, session_factory
+from src.integrations.flights.cache import FlightCache
+from src.integrations.flights.client import FlightClient
 from src.integrations.mailtrap.client import MailtrapClient
 from src.integrations.mailtrap.mailtrap_inbound import AuthenticatedClient
 
@@ -34,6 +36,7 @@ class ApplicationContext:
     mailtrap_client: MailtrapClient
     session_factory: async_sessionmaker[AsyncSession]
     tavily_client: TavilyClient
+    flight_client: FlightClient
     #: Lazily-connected Temporal client (one per worker process), reused by the scheduling tools
     #: and the ``enqueue_scheduled_turn`` activity. Connected on first access via
     #: :func:`get_temporal_client`; ``None`` until then.
@@ -74,7 +77,9 @@ async def get_temporal_client() -> Client:
     if ctx.temporal_client is not None:
         return ctx.temporal_client
     async with _temporal_client_lock:
-        if ctx.temporal_client is not None:  # re-check — another task may have connected while we waited
+        if (
+            ctx.temporal_client is not None
+        ):  # re-check — another task may have connected while we waited
             return ctx.temporal_client
         # Imported lazily so importing this module (pulled in broadly by the FastAPI app) never
         # imports temporalio at load time.
@@ -120,6 +125,11 @@ def build_context(settings: Settings | None = None) -> ApplicationContext:
         session_factory=session_factory(engine),
         tavily_client=TavilyClient(
             api_key=settings.tavily_api_key,
+        ),
+        flight_client=FlightClient(
+            api_key=settings.flightapi_key,
+            cache=FlightCache(settings.flight_cache_dir),
+            settings=settings,
         ),
     )
     set_context(ctx)

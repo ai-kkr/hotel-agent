@@ -21,6 +21,9 @@ htmlcov/
 .ruff_cache/
 .ty_cache/
 
+# FlightAPI on-disk cache (cashews DiskCache backend) — runtime artifact, never committed.
+.cache/
+
 # Booking-corpus collector (dev tooling) — personal PII must never enter the repo.
 credentials.json
 token.json

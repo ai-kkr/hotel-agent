@@ -76,3 +76,27 @@ tool_retry:
       max_delay: 30.0
       jitter: true
       retry_on: transient
+    # FlightAPI — сетевой тул, повторяем как search_internet/extract_web_page.
+    track_flight:
+      max_retries: 3
+      backoff_factor: 2.0
+      initial_delay: 1.0
+      max_delay: 30.0
+      jitter: true
+      retry_on: transient
+
+# --- FlightAPI (отслеживание рейсов) ---
+# Секрет KKR_FLIGHTAPI_KEY — в .env/окружении, не здесь.
+# force_ttl закреплён закомментированным: по умолчанию прод использует TTL по близости к вылету
+# (proximity), а не фиксированный. Раскомментируйте на dev-стенде/в тестах, чтобы не расходовать
+# платные вызовы FlightAPI (0 = всегда обходить кэш).
+# flight_cache_force_ttl_seconds: 604800
+flight_cache_dir: .cache/flights
+# Пороговые значения TTL по близости к вылету (используются, когда force_ttl не задан):
+#   > flight_ttl_far_boundary_days — долгий TTL (далёкий рейс, статус стабилен);
+#   между near_boundary_days и far_boundary_days — короткий TTL;
+#   < flight_ttl_near_boundary_days (день вылета) — TTL 0, кэш обходится всегда.
+flight_ttl_far_seconds: 86400
+flight_ttl_near_seconds: 21600
+flight_ttl_far_boundary_days: 7
+flight_ttl_near_boundary_days: 1

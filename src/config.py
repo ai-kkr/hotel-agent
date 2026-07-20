@@ -208,6 +208,22 @@ class Settings(BaseSettings):
     # tavily
     tavily_api_key: str = ""
 
+    # --- FlightAPI (flight status tracking) ---
+    flightapi_key: str = ""
+    # On-disk cache directory (cashews DiskCache backend). Ephemeral on Railway is acceptable —
+    # the cache is an optimization, never a source of truth (see docs/architecture.md flight-tracking).
+    flight_cache_dir: str = ".cache/flights"
+    # Force-override: when set, pins every flight lookup's cache TTL regardless of proximity logic
+    # (dev stand / tests, to cap FlightAPI spend — the API is metered). ``0`` = always bypass the
+    # cache. Leave unset in prod so the proximity tiers below apply.
+    flight_cache_force_ttl_seconds: int | None = None
+    # Proximity-based TTL tiers (prod default, used when force-TTL is unset): TTL shrinks as the
+    # flight nears departure and drops to 0 (cache bypass) on the day of departure.
+    flight_ttl_far_seconds: int = Field(default=24 * 3600, ge=0)  # > far_boundary_days away
+    flight_ttl_near_seconds: int = Field(default=6 * 3600, ge=0)  # within far_boundary_days
+    flight_ttl_far_boundary_days: int = Field(default=7, ge=0)
+    flight_ttl_near_boundary_days: int = Field(default=1, ge=0)  # below this = day-of, TTL 0
+
     # --- Optional YAML config file (``KKR_CONFIG_FILE`` overrides). Pure metadata: the path is
     # actually read in :meth:`settings_customise_sources` before fields are parsed. ---
     config_file: str = _DEFAULT_YAML_PATH
