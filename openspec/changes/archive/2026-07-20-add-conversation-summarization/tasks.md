@@ -91,7 +91,7 @@
 - [ ] 7.2 Local smoke: `docker compose up -d postgres temporal`, run app, drive a long thread past
       the threshold, confirm summarization fires, guest is notified, and the agent continues
       coherently.
-- [ ] 7.3 Commit on `main`, deploy
+- [x] 7.3 Commit on `main`, deploy
       `env -u RAILWAY_TOKEN -u RAILWAY_API_TOKEN railway up --service app --detach -m "feat: conversation summarization"`,
       poll `env -u RAILWAY_TOKEN -u RAILWAY_API_TOKEN railway deployment list --service app --json`
       to `SUCCESS`.
