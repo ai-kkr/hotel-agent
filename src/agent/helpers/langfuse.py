@@ -41,9 +41,15 @@ async def inject_langfuse_callback():
         yield
         return
     cfg = var_child_runnable_config.get() or {}
-    cfg = cfg | {
-        "callbacks": [*list(cfg.get("callbacks", [])), handler],
-    }
+    # Merge the handler onto the existing callbacks. Under the Temporal LangGraph plugin (production)
+    # ``callbacks`` is a list (model_node etc. run fine); but a plain ``graph.ainvoke`` may set an
+    # ``AsyncCallbackManager`` there, which isn't iterable — ``[*list(manager), ...]`` would crash with
+    # ``TypeError: object is not iterable``. Handle both: append to a list, otherwise replace.
+    existing = cfg.get("callbacks", [])
+    new_callbacks: list = (
+        [*existing, handler] if isinstance(existing, list | tuple) else [handler]
+    )
+    cfg = cfg | {"callbacks": new_callbacks}
     token = var_child_runnable_config.set(cfg)
     try:
         yield

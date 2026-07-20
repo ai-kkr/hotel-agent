@@ -38,12 +38,15 @@ class AgentWorkflow:
             input.client_id,
             start_to_close_timeout=timedelta(seconds=10),
         )  # type: ignore
+        # ``aupdate_state`` (async), not the sync ``update_state``: state seeding evaluates the
+        # entry branch (``summarize_check`` at START), which is async like every node — the sync
+        # superstep can't await it and would raise ``TypeError: No synchronous function provided``.
         if state is not None:
-            g.update_state(config=config, values=state)
+            await g.aupdate_state(config=config, values=state)
         # Optional partial-state merge for this turn (e.g. a hotel reply's threading headers,
         # injected by the webhook). Applied after loading persisted state, before the turn runs.
         if input.state_update:
-            g.update_state(config=config, values=input.state_update)
+            await g.aupdate_state(config=config, values=input.state_update)
         # Typing is managed per-node (model_node / tool_node) via ``bot_typing`` — a workflow-wide
         # loop would fight the agent's own message sends (each send clears the indicator).
         state: EmailState = await g.ainvoke(

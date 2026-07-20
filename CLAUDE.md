@@ -108,7 +108,7 @@ Read [docs/architecture.md](docs/architecture.md) and [docs/agent.md](docs/agent
 treatment. The essentials that aren't obvious from any single file:
 
 **One ReAct agent, hand-built graph, run under Temporal.** A `langgraph.graph.StateGraph` (`model`,
-`tools`, and `cleanup` nodes) in [src/agent/agent.py](src/agent/agent.py) — **not** `create_agent` —
+`tools`, `cleanup`, and `summarize` nodes) in [src/agent/agent.py](src/agent/agent.py) — **not** `create_agent` —
 state `EmailState`, context `EmailContext`. The graph is executed by the Temporal LangGraph plugin,
 which runs each node as an activity (see [src/temporal/worker.py](src/temporal/worker.py)).
 Conversation history is keyed per client via `ClientORM.thread_id` (`client:{id:04d}`).
@@ -124,6 +124,34 @@ preserves `id` / `tool_call_id` / `name` (tool-call↔response linkage stays int
 `tool_path` returns `"tools"` / `"cleanup"` / `"__end__"` and **shortcuts straight to `END`** when
 nothing is archivable (no cleanup activity scheduled). Pure data in/out — no LLM, no `get_context()`,
 no migration. Logic in [src/agent/compaction.py](src/agent/compaction.py).
+
+**Conversation summarization (orthogonal to cleanup).** `cleanup` only retires one-shot search
+output; when the *conversation itself* grows toward the context window, a second mechanism kicks in.
+A `summarize_check` conditional gates every entry to the `model` node (`START → summarize_check` and
+`tools → summarize_check`, replacing the old `START → model` / `tools → model`): when
+`EmailState.last_prompt_tokens` exceeds `summarize_token_threshold` it routes `→ summarize → model`,
+otherwise straight `→ model`. The token signal comes **from the model's own `usage_metadata`** —
+`model_node` reads `result.usage_metadata["input_tokens"]` after each invoke and stores it; **no local
+tokenizer**. The trigger is reactive (it acts on the *previous* call's usage), so the first call of a
+conversation is unprotected. The `summarize` node compresses the old message prefix into a running
+`EmailState.conversation_summary` field (NOT a message), prepended as a `SystemMessage` after
+`SYSTEM_MAIN` on every model call, and removes the prefix via `RemoveMessage` (the stock
+`add_messages` reducer drops by id), retaining a recency window of the last
+`summarize_keep_last_messages`. The split boundary **never breaks an `AIMessage(tool_calls)` ↔
+`ToolMessage` pair** (`split_index` rolls the cut back). Before the LLM call the node pushes a Russian
+notification to the guest (`⏳ Переписка стала длинной — подвожу итог…`). The summarization call is
+**cache-aware ("prefix is immutable")**: it must be a *continuation* of the same request `model_node`
+cached, so (a) the model is built **identically** to `model_node` (`build_model + bind_tools +
+sticky_session` with the same `client_id` — tools aren't needed functionally, only for cache parity),
+and (b) the message order mirrors `model_node` exactly: `[SYSTEM_MAIN, SystemMessage(prev_summary)?,
+*prefix, HumanMessage(SYSTEM_SUMMARIZE)]` — `SYSTEM_MAIN` stays the system prompt, `prev_summary`
+sits in the *same position* `model_node` puts the running summary (right after `SYSTEM_MAIN`, so at
+re-summarization it byte-matches the cached prefix), and the instruction is the only uncached part
+(trailing `HumanMessage`). Swapping `SYSTEM_MAIN` or dropping `bind_tools`/`session_id` would bust the
+whole thread cache. It runs as its own Temporal activity (LLM timeout + retry + Langfuse). New state
+fields are plain JSON → no migration, no data-converter change. Logic in
+[src/agent/summarization.py](src/agent/summarization.py); prompt
+[src/agent/prompts/system_summarize.md](src/agent/prompts/system_summarize.md).
 
 **The agent runs from two entry points**, both funnelling into `agent_step()` in
 [src/temporal/client.py](src/temporal/client.py) (signal-with-start enqueues one turn on the client's

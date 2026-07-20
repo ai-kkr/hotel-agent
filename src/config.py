@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     # start_to_close_timeout for LLM-backed activities (extract, agent_turn).
     llm_activity_timeout_seconds: int = Field(default=180, ge=1)
 
+    # --- Conversation summarization ---
+    # Soft threshold on the model's reported ``input_tokens`` (read from ``usage_metadata`` of the
+    # previous model call). When the previous call exceeded it, the next entry toward the model node
+    # first summarizes the old history. Must sit below the prod model's context window.
+    summarize_token_threshold: int = Field(default=100_000, ge=1)
+    # Recency window: how many most-recent messages are always retained verbatim (never summarized).
+    summarize_keep_last_messages: int = Field(default=6, ge=1)
+
     # --- Extraction ---
     extraction_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 

@@ -19,7 +19,7 @@ email отеля, составляет и отправляет письмо на
   удалось найти email отеля).
 
 Агент реализован одним ReAct-графом на рукописном `langgraph.graph.StateGraph`
-([`src/agent/agent.py`](../src/agent/agent.py), узлы `model` + `tools` + `cleanup`, state-схема
+([`src/agent/agent.py`](../src/agent/agent.py), узлы `model` + `tools` + `cleanup` + `summarize`, state-схема
 `EmailState`, контекст `EmailContext`). Граф исполняется Temporal LangGraph-плагином: каждый узел
 бежёт как активность (см. [architecture.md](architecture.md#temporal--srctemporal)). История
 переписки привязана к клиенту через `ClientORM.thread_id` (`client:{id:04d}`); ход ставится в очередь
@@ -113,6 +113,63 @@ email отеля, составляет и отправляет письмо на
 [`src/agent/compaction.py`](../src/agent/compaction.py) (`ARCHIVABLE_TOOLS`, `compaction_needed`,
 `compact`). Маркер `archived` — обычный словарь в `additional_kwargs`, поэтому проходит
 round-trip через `StateType` (JSONB) и `message_aware_data_converter` без изменений схемы.
+
+### Нода `summarize` — саммаризация длинной переписки ([`summarization.py`](../src/agent/summarization.py))
+
+Это **второй, ортогональный** механизм управления контекстом — он не заменяет `cleanup`. `cleanup`
+режет одноразовый вывод поиска *в конце хода*; `summarize` режет **саму историю переписки**, когда
+она вырастает под контекстное окно модели (длинный тред с отелем, много ходов с гостем).
+
+**Триггер — реактивный, по реальному размеру контекста от самого провайдера** (без локального
+токенайзера). `model_node` после `model.ainvoke` читает `result.usage_metadata["input_tokens"]` и
+кладёт в `EmailState.last_prompt_tokens`. Перед каждым входом в `model` граф проходит через
+`summarize_check`: если `last_prompt_tokens` превышает `summarize_token_threshold` (дефолт 100000) —
+сначала нода `summarize`, иначе сразу `model`. Граф: `START/tools → summarize_check → summarize → model`
+(или `→ model`). **Первый ход не защищён** — прошлого `usage` ещё нет, порогу не на что опираться.
+
+**Бегущее саммари — отдельное поле стейта** `EmailState.conversation_summary: str | None`, а не
+сообщение в истории. `model_node` препендит его как `SystemMessage` сразу после `SYSTEM_MAIN`
+(`[SYSTEM_MAIN, SystemMessage(summary) if summary else [], *messages]`). Отдельное поле даёт: саммари
+всегда первое (а не хвостом после recency-окна), аккумулируется при повторных сжатиях, инструкция
+«как обобщать» не остаётся в истории навсегда. Саммари меняется только в моменты саммаризации
+(редко), поэтому префикс `[SYSTEM_MAIN + summary + сообщения]` между ними остаётся стабильным для
+кеша (консистентно с OpenRouter sticky-session).
+
+**Механика сжатия.** `summarize_node`: (1) шлёт гостю уведомление «⏳ Переписка стала длинной —
+подвожу итог…» (лишний LLM-вызов может занять несколько секунд); (2) считает разрез
+`split_index(messages, keep_last)`; (3) одним invoke-ом саммаризует старый префикс; (4) возвращает
+`{"conversation_summary": …, "messages": [RemoveMessage(id=…) для каждого сообщения префикса]}`.
+Штатный редьюсер `add_messages` выкидывает префикс по id, recency-окно `messages[-keep_last:]`
+(дефолт 6) остаётся нетронутым. Если вся история укладывается в окно (резать нечего) — нода
+no-op (без уведомления и без вызова).
+
+**Гарантия целостности tool-call пары (критично).** Граница среза **не может** пройти между
+`AIMessage(tool_calls)` и его `ToolMessage(s)`: если recency-разрез оставляет `ToolMessage` в окне, а
+породивший его `AIMessage(tool_calls)` уходит в префикс — `split_index` откатывает разрез назад, чтобы
+пара осталась целой (иначе модель увидит `ToolMessage` без вызвавшего его вызова и сломается).
+
+**Cache-aware формирование саммаризационного вызова («префикс немутабелен»).** Кеш длинного треда
+живёт только если саммаризационный вызов — продолжение того же запроса, что кешировал `model_node`.
+Три условия: (1) **модель идентична включая тулы** — `summarize_node` строит её как `model_node`
+(`build_model + bind_tools + sticky_session` с тем же `client_id`); функционально тулы саммаризации
+не нужны, они нужны для cache-parity. (2) **Порядок сообщений зеркалит `model_node`**:
+`[SYSTEM_MAIN, SystemMessage(prev_summary)?, *prefix, HumanMessage(SYSTEM_SUMMARIZE)]` — `SYSTEM_MAIN`
+остаётся системным промптом (его НЕ заменяет промпт саммаризации), `prev_summary` идёт **в ту же
+позицию, что в `model_node`** (сразу после `SYSTEM_MAIN`, а не в конец — при ре-сжатии он в точности
+равен тому, что `model_node` уже кешировал, → cache-hit), `*prefix` — сжимаемая старая история,
+`HumanMessage(SYSTEM_SUMMARIZE)` — инструкция, единственная не из кеша часть, последняя. (3) префикс
+немутабелен — ничего из кеша не переставляется. Свап `SYSTEM_MAIN` или потеря `bind_tools`/`session_id`
+инвалидировали бы весь кеш треда. Промпт — [`system_summarize.md`](../src/agent/prompts/system_summarize.md):
+фокус на текущей цели и следующем шаге, обязательно сохранить вехи/решения/данные (бронь, email отеля,
+отправленные письма и `message_id`, ответы отеля, плановые задачи, пожелания, открытые вопросы),
+сжимать болтовню над фактами.
+
+`summarize` — полноценная Temporal-активность (свой `start_to_close_timeout = llm_activity_timeout`,
+retry-policy, Langfuse), модель строит через `build_model` внутри `summarize_prefix` — никаких live-объектов
+в `EmailState`/`EmailContext`. Новые поля (`conversation_summary`, `last_prompt_tokens`) — чистый JSON,
+проходят round-trip через `StateType` (JSONB) и `message_aware_data_converter` без изменений схемы и
+**без миграции**. Логика — в [`src/agent/summarization.py`](../src/agent/summarization.py)
+(`summarization_needed`, `split_index`, `summarize_prefix`).
 
 ### Запланированные задачи — [`scheduling.py`](../src/agent/tools/scheduling.py)
 

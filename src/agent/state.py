@@ -53,3 +53,15 @@ class EmailState(AgentState, total=False):
     last_outbound_message_id: str | None  # Message-ID of the agent's last sent email
     last_hotel_message_id: str | None  # Message-ID of the hotel's last email (to reply to)
     last_hotel_subject: str | None  # subject of the hotel's last email (for "Re:")
+
+    # --- Conversation summarization (auto-compression of long threads) ---
+    #: Running summary of the compressed history, set by the ``summarize`` node when the model's input
+    #: crosses ``summarize_token_threshold``. Prepended as a :class:`SystemMessage` on every model
+    #: call. Plain JSON — survives the ``states`` JSONB round-trip and the Temporal data converter
+    #: with no schema change. ``None`` until the first summarization.
+    conversation_summary: str | None
+    #: Token count of the model's input as reported by the provider
+    #: (``usage_metadata["input_tokens"]`` of the last model call) — the reactive signal for the
+    #: ``summarize_check`` gate. ``0``/absent until the first model call completes, so the very first
+    #: call of a conversation is never summarized (no past usage to act on).
+    last_prompt_tokens: int

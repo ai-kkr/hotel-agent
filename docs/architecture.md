@@ -19,7 +19,8 @@
                                                   │   load_state (activity) → InMemorySaver → g.ainvoke
                                                   ▼
                                    LangGraph-агент (src/agent): узлы бегут как Temporal-активности
-                                                  │   model ──► tools ──► model … ──► cleanup ──► END
+                                                  │   summarize_check ─► model ──► tools ──► model … ──► cleanup ──► END
+                                                  │      (→ summarize → model, когда input_tokens > порога)
                                                   ▼
                                      tools: set_booking_info, send_wishes_to_hotel, reply_to_hotel,
                                      search_internet, extract_web_page, inform_step, cancel_task,
@@ -96,17 +97,19 @@
 ### Агент — `src/agent`
 
 Один ReAct-агент на рукописном [`langgraph.graph.StateGraph`](../src/agent/agent.py) (узлы `model` +
-`tools` + `cleanup`) — без `create_agent`. Граф исполняется Temporal LangGraph-плагином, каждый узел
+`tools` + `cleanup` + `summarize`) — без `create_agent`. Граф исполняется Temporal LangGraph-плагином, каждый узел
 бегёт как активность. Подробно — в [agent.md](agent.md). Здесь — только структурные файлы:
 
 - [`state.py`](../src/agent/state.py) — `EmailState` (наследник `AgentState`) с полями брони,
-  пожеланиями, флагом отмены и полями threading'а. Поля брони используют reducer `booking_field`
-  (см. ниже).
+  пожеланиями, флагом отмены, полями threading'а и полями саммаризации (`conversation_summary`,
+  `last_prompt_tokens`). Поля брони используют reducer `booking_field` (см. ниже). Новые поля
+  саммаризации — чистый JSON, без своего редьюсера.
 - [`context.py`](../src/agent/context.py) — `EmailContext` (TypedDict): только плоские данные
   (`from_email`, `reply_to`, `user_email`, `client_id`, `telegram_id`). Никаких объектов.
 - [`agent.py`](../src/agent/agent.py) — `build_email_agent()`: строит граф
-  `model → tools → model … → cleanup → END`, навешивая на каждый узел декораторы-хелперы (langfuse,
-  typing) и оборачивая вызовы тул через `run_tool_call` (retry + self-correction). `tool_path`
+  `summarize_check → model → tools → model … → cleanup → END` (вход в `model` gated `summarize_check`:
+  при `last_prompt_tokens` > порога сначала `summarize → model`), навешивая на каждый узел декораторы-хелперы
+  (langfuse, typing) и оборачивая вызовы тул через `run_tool_call` (retry + self-correction). `tool_path`
   маршрутизирует `model` → `"tools"` (есть tool-calls) / `"cleanup"` (ход завершается и есть что
   архивировать) / `"__end__"` (шорткат — архивировать нечего, `cleanup` не выполняется).
 - [`compaction.py`](../src/agent/compaction.py) — компактизация контекста: нода `cleanup` в конце
@@ -114,6 +117,13 @@
   стабом **на месте** через id-upsert штатного редьюсера `add_messages` (свой редьюсер не вводится),
   сохраняя `id` / `tool_call_id` / `name` и помечая `additional_kwargs["archived"]=True`. Вайтлист —
   по имени тулы, не по размеру. Чистый Python, без LLM/`get_context()`/миграций.
+- [`summarization.py`](../src/agent/summarization.py) — авто-саммаризация длинной переписки: нода
+  `summarize` сжимает старый префикс истории в бегущее поле `conversation_summary` и удаляет его через
+  `RemoveMessage` (штатный `add_messages` выкидывает по id), оставляя recency-окно. Триггер
+  реактивный — по `usage_metadata["input_tokens"]` прошлого вызова модели; граница среза не разрывает
+  пару `AIMessage(tool_calls) ↔ ToolMessage`. Саммаризационный вызов cache-aware: `SYSTEM_MAIN` остаётся
+  системным промптом, инструкция идёт хвостовой `HumanMessage`. Новые поля стейта — чистый JSON, **без
+  миграции и без изменений data converter**.
 - [`middleware.py`](../src/agent/middleware.py) — `run_tool_call`: повторяет транзиентные сбои тул по
   per-tool-политике и превращает `SelfCorrectionError` в `ToolMessage`-подсказку (поведение бывших
   middleware — см. [agent.md](agent.md#самокоррекция)).
